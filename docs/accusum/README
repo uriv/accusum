@@ -1,0 +1,74 @@
+Last modified: 03 OCT 2014
+--------------------------
+ACCURATE SUMMATION OF FLOATING-POINT DATA ON GPUS
+--------------------------
+This project adds accurate double-precision floating-point summation to CUB library (master branch, after version 1.3.2). The project was implemented by Uri Verner in Oct 2014. 
+For details, please contact Cliff Woolley <jwoolley@nvidia.com>, Uri Verner <uri.verner@gmail.com>, or Duane Merill <dumerill@nvidia.com>.
+
+DOCUMENTATION
+- This README file
+- accusum.pptx 					Slides that present the problem in current methods for parallel summation and describes the methods implemented in this work
+- Notes-accurate-FP-sum.docx	Notes about our method for accurate summation
+
+INSTALLATION
+- The test currently uses MPFR library to validate the result. To install MPFR, please follow the installation instructions at http://www.mpfr.org .
+- To build the test on a 64-bit Linux machine with a GPU with compute capability 3.5, run from test\ :
+>>  make sm=350 force64=1 test_thread_reduce_extended
+- Then run the executable in bin\test_thread_reduce_extended.
+
+CODE ORIENTATION
+- cub\device\device_accusum.cuh			The summation function implementation, including CPU and GPU code, and additional utility functions.
+- test\test_thread_reduce_extended.cu	Test infrastructure for the accurate summation function
+
+IMPLEMENTATION
+- The implementation contains two summation methods that we call (1) sort-reduce and (2) smem-atomic. Both methods have two steps: partial per-thread-block reduction of the input into sets of bins on the GPU, and final summation on the CPU. The methods use an extended version of Knuth's TwoSum method to keep track of round-off error.
+- The main method is sort-reduce. It is based on block-wide parallel primitives, such as sort and scan. It has a number of configuration parameters that allow tuning its performance. Please refer to accusum.pptx and Notes-accurate-FP-sum.docx for a description of the algorithm.
+- smem-atomic is based on atomic operations in shared memory. It has been implemented for comparison and most of the parameters there are fixed.
+
+PROBLEMS, OPTIMIZATION, AND DEVELOPMENT DIRECTIONS
+
+// TESTING AND TUNING
+The templated function RunTests() can run a series of experiments trying different combinations of configuration parameters. The function received a structure of ranges in which each optimization parameter needs to be tested as a template parameter. For example:
+struct SetupDefault
+{
+    enum { Method = TestExponentSort::ACCUSUM_SORT_REDUCE};  /*ACCUSUM_SMEM_ATOMIC ACCUSUM_SORT_REDUCE*/
+    typedef Range<4,4>      WarpsPerBlock;       //< for BLOCK_SIZE multiple by 32
+    typedef Range<24,24>      BlocksPerSm;         //< for MIN_GRID_SIZE multiple by 14
+    typedef Range<3,3>      ItemsPerThread;
+    typedef Range<2,2>      Expansions;
+    typedef Range<3,3>      RadixBits;
+    typedef Range<3,3>      MinConcurrentBlocks;    //< to be used as a parameter to __launch_bounds__
+    typedef Range<5,5>      GenerationMode;
+};
+...
+RunTests<SetupDefault>(testobj, num_items, true, seed);
+
+Please note that with large template ranges the compilation time may be long because each combination is compiled separately.
+
+// EXTEME VALUES: NAN, +INF, -INF
+- One problem with the TwoSum method and its extensions is dealing with sums that overflow the dynamic range representable by a floating-point word.
+The TwoSum method is as follows:
+[s,r] = TwoSum(a,b)		// [sum, round-off error] := a + b
+  s = a + b
+  v = s - a
+  r = (a - (s - v)) + (b - v)
+In case of an overflow (or underflow), the result of (a+b) is +inf (or -inf). In this case, (s-v)=(inf+-inf)=NaN, and the remainder is NaN, which is obviously wrong. In the extended version, [s3,r3] = [s1,r1] + [s2,r2], this NaN can also propagate to the sum (s). Unless handled properly, NaNs can 'contaminate' the entire computation.
+Two ways to solve the NaN contamination problems are:
+1. after each TwoSum operation, check if s=inf, and 'fix' the result by replacing the NaN in r with 0.0. This method is currently implemented.
+2. whenever the sum may overflow, check if s=inf, and mark a special global flag that a +inf or -inf was encountered. Do not fix the result. After the block summation is complete, if the flag is marked then ignore the summation result. This method may return the wrong result if the correct result is NaN due to computing +inf + -inf. Suppose +inf was reached first, then -inf may not be reached due to NaN contamination.
+
+The second method should be more efficient, because it does not have execution dependency in waiting for the fixed remainder, and requires less isinf() checks.
+
+NaN is a valid result for summation when:
+1. one of the inputs is NaN
+2. +inf + -inf
+
+When the input is read, each item is checked for NaN, and if a NaN input is found then a NaN flag is raised. After the GPU computation is complete, if the NaN flag is raised, NaN is returned.
+
+// REDUCING NUMBER OF COMPUTATIONS
+When adding two accumulators, some extra computations are done to make sure the remainder only holds the bits that don't fit in the main sum. This could be relaxed, i.e., we can allow the remainder and the sum have some overlap. However, this may cause a loss of usable significant bits and lead to an overflow. To solve this, when an overflow is detected, the accumulator can be 'normalized' (remainder does not overlap sum) and then the operation can be retried. This should lead to a significant reduction of computations in wide accumulators.
+
+// SUMMATION ON THE CPU
+The final summation step has limited parallelism, and so it is done on the CPU. With the sort-reduce method, the input size for the CPU is small and hardly influences the performance. With smem-atomic, however, every block produces 15 sets of bins, so the CPU load may be more significant. Tuning the number of launched thread blocks significantly influences the overall summation performance.
+
+
