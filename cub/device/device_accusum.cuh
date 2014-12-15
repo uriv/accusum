@@ -682,7 +682,6 @@ public:
         // add offset that depends on block index
         d_accumulators = (void*)((char*)d_accumulators + blockIdx.x * Meta::NUM_BINS * Meta::BIN_SIZE_BYTES);
         d_in += blockIdx.x * TILE_SIZE;
-
         int items_per_block = num_items / gridDim.x;
 
         // Loop over tiles
@@ -769,7 +768,7 @@ public:
             for (int i = 0; i < COUNT / BLOCK_THREADS; i++)
             {
                 double val = isptr[i * BLOCK_THREADS + threadIdx.x];
-                igptr[i * BLOCK_THREADS + threadIdx.x] = (isnan(val) ? 0.0 : val);
+                igptr[i * BLOCK_THREADS + threadIdx.x] = (isnan(val) ? 0.0 : val);  // TODO: test alternative fix for NaN: fmax(val,0.0) + fmin(val,0.0)
 //                if (!isnan(val))
 //                {
 //                    int bin_id = (i * BLOCK_THREADS + threadIdx.x) / EXPANSIONS;
@@ -1180,6 +1179,12 @@ struct DeviceAccurateFPSum
                 0,//temp_global_bin_set_size,
                 d_extreme_flags);
             cudaProfilerStop();
+
+//            double* h_items = (double*)malloc(num_items * sizeof(double));
+//            CubDebugExit(cudaMemcpy(h_items, d_in, num_items * sizeof(double), cudaMemcpyDeviceToHost));
+//            printf("%g %g %g\n", h_items[0], h_items[1], h_items[2]);
+//            free(h_items);
+
             if (error = CubDebug(cudaMemcpyAsync(h_bin_sets, d_bin_sets, allocation_sizes[0], cudaMemcpyDeviceToHost, stream))) break;
             //        if (error = CubDebug(cudaMemcpy(h_global_bin_set, d_global_bin_set, allocation_sizes[0], cudaMemcpyDeviceToHost, stream))) break;
             if (error = CubDebug(cudaMemcpyAsync(h_extreme_flags, d_extreme_flags, allocation_sizes[1], cudaMemcpyDeviceToHost, stream))) break;
@@ -1195,6 +1200,7 @@ struct DeviceAccurateFPSum
                 for (int i = 0; i < allocation_sizes[0] / sizeof(double); i++)
                 {
                     total_sum.Add(((double*)h_bin_sets)[i]);
+//                    total_sum.print(); printf("\n");
                 }
                 total_sum.Normalize();
                 result = total_sum[0];

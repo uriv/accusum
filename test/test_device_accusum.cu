@@ -326,8 +326,8 @@ struct TestExponentSort
         h_reference        = new double[MAX_ITEMS];
         h_elapsed          = new clock_t[max_grid_size];
 
-        h_global_bins          = new double[(MAX_EXPANSIONS + 1) * MAX_BINS];
-        h_extreme_flags     = new ExtremeFlags[1];
+        h_global_bins      = new double[(MAX_EXPANSIONS + 1) * MAX_BINS];
+        h_extreme_flags    = new ExtremeFlags[1];
 
 //        int num_iterations = CUB_QUOTIENT_CEILING(MAX_ITEMS, MAX_ITEMS_PER_BLOCK);
         size_t max_temp_reduce_size = max_grid_size * MAX_BINS * MAX_BIN_SIZE;     //< more memory than required, but simply computed
@@ -755,6 +755,99 @@ void TestExponentAll()
 }
 
 
+void simple_test()
+{
+    printf("Simple test started\n");
+    double* h_items = NULL;
+    double* d_items = NULL;
+    double* d_result = NULL;
+    double* d_temp  = NULL;
+    size_t d_temp_bytes = 0;
+    double result = 0.;
+    double reference = 0.;
+
+    // performance tuning parameters
+    enum SortReduceConfig_e{
+        BLOCK_THREADS = 128,
+        MIN_GRID_SIZE = 224,
+        ITEMS_PER_THREAD = 3,
+        EXPANSIONS = 2,
+        RADIX_BITS = 5,
+        MIN_CONCURRENT_BLOCKS = 9,
+        BIN_CAPACITY = 1 << 20      // derived from
+    };
+
+    // AccumulatorBinsMetadata provides additional properties of the algorithm
+    //   that can be derived from the specified parameters (print all with ::info())
+    typedef AccumulatorBinsMetadata<BLOCK_THREADS, ITEMS_PER_THREAD, EXPANSIONS, RADIX_BITS> BinMeta;
+    int num_items = 1 << 24;
+
+    ///////////////////////////////////////////////
+    // make num items multiple of processing width (temporary constraint)
+    int device_id, sm_count;
+    CubDebugExit(cudaGetDevice(&device_id));
+    CubDebugExit(cudaDeviceGetAttribute(&sm_count, cudaDevAttrMultiProcessorCount, device_id));
+    const int TILE_SIZE = BLOCK_THREADS * ITEMS_PER_THREAD;
+    const int grid_size = CUB_ROUND_UP_NEAREST(CUB_MAX(MIN_GRID_SIZE, CUB_QUOTIENT_CEILING(num_items, BinMeta::BIN_CAPACITY)), sm_count);
+    num_items = CUB_ROUND_UP_NEAREST(num_items, TILE_SIZE * grid_size);
+    ///////////////////////////////////////////////
+
+    printf("Working on %d items.\n", num_items);
+
+    h_items = (double*)malloc(num_items * sizeof(double));
+    if (h_items == NULL)
+    {
+        printf("Cannot allocate host memory\n");
+        return;
+    }
+    memset(h_items, 0, num_items * sizeof(double));
+    std::fill(&h_items[0], &h_items[num_items], 1.0);   // initialize all items to 1.0
+
+    // get required size of temporary space on device to d_temp_bytes
+    DeviceAccurateFPSum::SumSortReduce<BLOCK_THREADS, MIN_GRID_SIZE, ITEMS_PER_THREAD, EXPANSIONS, RADIX_BITS, MIN_CONCURRENT_BLOCKS>
+        (NULL, num_items, NULL, NULL, d_temp_bytes);
+    cudaDeviceSynchronize();
+
+    // allocate and initialize device memory
+    CubDebugExit(cudaMalloc((void**)&d_items, num_items * sizeof(double)));
+    CubDebugExit(cudaMalloc((void**)&d_result, sizeof(double) ));
+    CubDebugExit(cudaMalloc((void**)&d_temp, d_temp_bytes ));
+    CubDebugExit(cudaMemcpy(d_items, h_items, num_items * sizeof(double), cudaMemcpyHostToDevice));
+    CubDebugExit(cudaMemset(d_result, 0, sizeof(double)));
+    CubDebugExit(cudaMemset(d_temp, 0, d_temp_bytes));
+
+    DeviceAccurateFPSum::SumSortReduce<BLOCK_THREADS, MIN_GRID_SIZE, ITEMS_PER_THREAD, EXPANSIONS, RADIX_BITS, MIN_CONCURRENT_BLOCKS>
+        (d_items, num_items, d_result, d_temp, d_temp_bytes);
+    cudaDeviceSynchronize();
+    CubDebugExit(cudaMemcpy(&result, d_result, sizeof(double), cudaMemcpyDeviceToHost));
+
+    printf("Computed result: %g [%016llX]\n", result, reinterpret_bits<unsigned long long>(result));
+
+    // compute reference sum
+    reference = sum_mpfr(h_items, num_items);
+
+    // validate result
+    int compare;
+    compare = (reinterpret_bits<unsigned long long>(reference) != reinterpret_bits<unsigned long long>(result));
+    if (compare)
+    {
+        printf("\nREF, RES: %f %f | %g, %g [%016llX, %016llX]\n",
+            reference,
+            result,
+            reference,
+            result,
+            reinterpret_bits<unsigned long long>(reference),
+            reinterpret_bits<unsigned long long>(result));
+    }
+    else
+    {
+        printf("Validation OK.");
+    }
+
+    free(h_items);
+    printf("Simple test finished\n");
+}
+
 /**
  * Main
  */
@@ -783,10 +876,7 @@ int main(int argc, char** argv)
     CubDebugExit(cudaDeviceSetLimit(cudaLimitPrintfFifoSize, printf_buffer_size));
     CubDebugExit(cudaDeviceSetSharedMemConfig(cudaSharedMemBankSizeEightByte));
 
-    //TestFullTileDBG<BLOCK_REDUCE_RAKING,                   512, 1, 1, 8>(RANDOM, 200, CUB_TYPE_STRING(int));
-    //TestFullTileDBG<BLOCK_REDUCE_RAKING,                   128, 1, 1, 4>(RANDOM, 1, CUB_TYPE_STRING(int));
-
-//    test_block_sort();
+    simple_test();
     TestExponentAll();
 //    TestExponentCustom();
     cudaDeviceReset();
