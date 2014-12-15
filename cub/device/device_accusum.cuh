@@ -589,7 +589,7 @@ public:
         {
             typename BlockRadixSort::TempStorage     sort;
             struct {
-                typename BlockLoad::TempStorage          load;
+//                typename BlockLoad::TempStorage          load;
                 typename BlockDiscontinuity::TempStorage flag;
                 typename BlockScan::TempStorage          scan;
             };
@@ -627,8 +627,8 @@ public:
         int             num_items,            //< [in]  input array size
         void           *d_accumulators,       //< [out] accumulator bins
         size_t          accumulators_bytes,   //< [in]  size of accumulator bins array in bytes
-        void           *d_megabins,
-        size_t          megabins_bytes,
+        void           *d_global_bin_set,
+        size_t          global_bins_bytes,
         ExtremeFlags    *d_extreme_flags)
     {
         if (num_items == 0)
@@ -687,18 +687,24 @@ public:
 
         // Loop over tiles
         #pragma unroll 4
-        for (int item = 0; item < items_per_block; item += TILE_SIZE)
+        for (int tile_pos = 0; tile_pos < items_per_block; tile_pos += TILE_SIZE)
         {
             // BINS ARE BEING UPDATED
             // ITEMS ARE NOT BEING USED
             // Load tile
-            BlockLoad(temp_storage.load).Load(d_in, items);
-            __syncthreads();
+//            BlockLoad(temp_storage.load).Load(d_in, items);
+//            __syncthreads();
+            // Load items in direct striped order
+            #pragma unroll
+            for (int ITEM = 0; ITEM < ITEMS_PER_THREAD; ITEM++)
+            {
+                items[ITEM] = d_in[ITEM * BLOCK_THREADS + threadIdx.x];
+            }
             // BINS ARE NOT BEING UPDATED
             // ITEMS ARE BEING USED
 
             // Reduce values and update bins
-            bool overwrite_bins = (item == 0);
+            bool overwrite_bins = (tile_pos == 0);
             ///////////////////////////////////////////////
 
             /// RADIX SORT BY (SOME) EXPONENT BITS
@@ -767,7 +773,7 @@ public:
 //                if (!isnan(val))
 //                {
 //                    int bin_id = (i * BLOCK_THREADS + threadIdx.x) / EXPANSIONS;
-//                    atomicAddToBin_< EXPANSIONS + 1 >(((AccumulatorDouble<EXPANSIONS+1>*)d_megabins)[bin_id], val);
+//                    atomicAddToBin_< EXPANSIONS + 1 >(((AccumulatorDouble<EXPANSIONS+1>*)d_global_bin_set)[bin_id], val);
 //                }
             }
             if (COUNT % BLOCK_THREADS > 0)
@@ -858,7 +864,6 @@ public:
 };
 
 template<
-    int GRID_SIZE,
     int BLOCK_THREADS,
     int NUM_BINS,
     int NUM_BIN_COPIES
@@ -871,22 +876,26 @@ struct DeviceAccurateSumSmemAtomic
         double2* d_bins
         )
     {
-        __shared__ double bins[NUM_BIN_COPIES * (2 * NUM_BINS + 1)];
+        // Allocate double2 bins with one double padding to spread bins with the
+        // same id across different banks in different binset copies
+        __shared__ double s_bins[NUM_BIN_COPIES * (2 * NUM_BINS + 1)];
+
         double vals[1];
+        int nblocks = (int)gridDim.x;
+        int iblock = (int)blockIdx.x;
+        int ithread = (int)threadIdx.x;
+        int items_per_block = num_items / nblocks;
+        int bin_group = ithread % NUM_BIN_COPIES;
 
-        int items_per_block = num_items / GRID_SIZE;
-
-        d_in += items_per_block * blockIdx.x;
-        int bin_group = LaneId() % NUM_BIN_COPIES;
-        double2* mybins = (double2*)(&bins[bin_group * (2 * NUM_BINS + 1)]);
+        double2* mybins = (double2*)(&s_bins[bin_group * (2 * NUM_BINS + 1)]);
+        d_in += items_per_block * iblock;
 
         // initialize bins in shared memory
-        double* pdbl_bins = (double*)bins;
-        const int DBL_BINS_LEN = sizeof(bins) / sizeof(double);
+        const int DBL_BINS_LEN = sizeof(s_bins) / sizeof(double);
         #pragma unroll
         for (int i = threadIdx.x; i < DBL_BINS_LEN; i += BLOCK_THREADS)
         {
-            pdbl_bins[i] = 0.0;
+            s_bins[i] = 0.0;
         }
         __syncthreads();
 
@@ -901,7 +910,7 @@ struct DeviceAccurateSumSmemAtomic
         __syncthreads();
 
         // store bins in global mem
-        double* pdbl_d_bins = ((double*)d_bins) + (blockIdx.x * sizeof(bins) / sizeof(double));
+        double* out_bins = ((double*)d_bins) + (iblock * NUM_BIN_COPIES * 2 * NUM_BINS);
         #pragma unroll
         for (int i = threadIdx.x; i < NUM_BINS * 2 * NUM_BIN_COPIES; i += BLOCK_THREADS)
         {
@@ -909,22 +918,62 @@ struct DeviceAccurateSumSmemAtomic
 //            int i_bin = (i / NUM_BIN_COPIES) / 2;
 //            int i_word = (i / NUM_BIN_COPIES) % 2;
 //            int i_bin_copy = i % NUM_BIN_COPIES;
-//            pdbl_d_bins[i] = pdbl_bins[i_word + 2 * i_bin + (2 * NUM_BINS + 1) * i_bin_copy];
+//            out_bins[i] = bins[i_word + 2 * i_bin + (2 * NUM_BINS + 1) * i_bin_copy];
             int j = i + (i / (2 * NUM_BINS + 1));       //< skip the padding
-            pdbl_d_bins[i] = pdbl_bins[j];
+            out_bins[i] = s_bins[j];
         }
     }       // SumToBins
 
+
+    // Execute with one thread block
+    __device__ void AddTail(
+        double* d_tail,
+        int tail_len,
+        double2* d_bins
+        )
+    {
+        // Allocate double2 bins with one double padding to spread bins with the
+        // same id across different banks in different binset copies
+        __shared__ double2 s_bins[NUM_BINS];
+
+        double vals[1];
+
+        assert(gridDim.x == 1);
+
+        // load first bin set to smem
+        assert(BLOCK_THREADS >= NUM_BINS);
+        if (threadIdx.x < NUM_BINS)
+        {
+            // The bin sets are stored in d_bins with a stripe of NUM_BIN_COPIES bins
+            s_bins[threadIdx.x] = d_bins[threadIdx.x];
+        }
+        __syncthreads();
+
+        // accumulate in bins
+        for (int i = threadIdx.x; i < tail_len; i += BLOCK_THREADS)
+        {
+            vals[0] = d_tail[i];
+            int ibin = binid(vals[0]);
+            atomicAddToBin(vals[0], ibin, s_bins);
+        }
+        __syncthreads();
+
+        // store bins back in global mem
+        if (threadIdx.x < NUM_BINS)
+        {
+            d_bins[threadIdx.x] = s_bins[threadIdx.x];
+        }
+    }       // AddTail
+
     __device__ int binid(double d)
     {
+        enum {
+            LOG_NUM_BINS = Log2<NUM_BINS>::VALUE,
+            SHIFT_RIGHT = 63 - LOG_NUM_BINS
+        };
         long long ll = __double_as_longlong(d);
-        int bin = (int)((ll >> 52) & 0x7ff) / NUM_BINS;
+        int bin = (int)(ll >> SHIFT_RIGHT) & (NUM_BINS-1);
         return bin;
-    }
-
-    __device__ double& at(double2& d2, int idx)
-    {
-        return (idx == 0 ? d2.x : d2.y);
     }
 
     __device__ double atomicAdd(double* address, double val)
@@ -940,10 +989,11 @@ struct DeviceAccurateSumSmemAtomic
 
     __device__ void atomicAddToBin(double val, int bin, double2* bins)
     {
+        double* dbl_bins = (double*)bins;
         double a, b, x, y, av, bv, ar, br;
         b = val;
-        a = atomicAdd(&at(bins[bin], 0), b);    // returns a and stores (a+b) in bin[0]
-        x = a + b;                              // recompute s=(a+b)
+        a = atomicAdd(&dbl_bins[2 * bin + 0], b);       // add val (=b) to bin[0] and returns old bin[0] (=a)
+        x = a + b;                                      // recompute (a+b)
         bv = x - a;
         av = x - bv;
         br = b - bv;
@@ -952,7 +1002,7 @@ struct DeviceAccurateSumSmemAtomic
 
         if (y != 0.0)
         {
-            atomicAdd(&at(bins[bin], 1), y);
+            atomicAdd(&dbl_bins[2 * bin + 1], y);       // add remainder to bin[1]
         }
     }
 };
@@ -977,13 +1027,13 @@ __global__ void DeviceAccurateSumKernel(
     int             num_items,
     void           *d_accumulators,
     size_t          accumulators_bytes,
-    void           *d_megabins,
-    size_t          megabins_bytes,
+    void           *d_global_bin_set,
+    size_t          global_bins_bytes,
     ExtremeFlags    *d_extreme_flags)
 {
     typedef DeviceAccurateSum<BLOCK_THREADS, ITEMS_PER_THREAD, EXPANSIONS, RADIX_BITS> DeviceAccurateSum;
     __shared__ typename DeviceAccurateSum::TempStorage temp_storage;
-    DeviceAccurateSum(temp_storage).SumToBins(d_in, num_items, d_accumulators, accumulators_bytes, d_megabins, megabins_bytes, d_extreme_flags);
+    DeviceAccurateSum(temp_storage).SumToBins(d_in, num_items, d_accumulators, accumulators_bytes, d_global_bin_set, global_bins_bytes, d_extreme_flags);
 }
 
 /**
@@ -993,23 +1043,46 @@ __global__ void DeviceAccurateSumKernel(
  * Each bin contains the sum of the items in the thread-block's
  *   share of the input that have an exponent in the bin's exponent range.
  *   The bins in each set cover the entire double-precision exponent range.
+ * Assumes that the number of items (num_items) is a multiple of the total number of threads. The
+ *   remaining values are later added to the bins by atomicadd_tail_kernel
  */
 template<
-    int GRID_SIZE,
     int BLOCK_THREADS,
-    int NUM_CONCURRENT_BLOCKS,
+    int BLOCK_WAVE_SIZE,
     int NUM_BINS,
     int NUM_BIN_COPIES
 >
-__launch_bounds__(BLOCK_THREADS, NUM_CONCURRENT_BLOCKS)
-__global__ void accuadd_kernel(
+__launch_bounds__(BLOCK_THREADS, BLOCK_WAVE_SIZE)
+__global__ void atomicadd_kernel(
     double* d_in,
     int num_items,
     double2* d_bins
     )
 {
-    typedef DeviceAccurateSumSmemAtomic<GRID_SIZE, BLOCK_THREADS, NUM_BINS, NUM_BIN_COPIES> DeviceAccurateSumSmemAtomic;
+    typedef DeviceAccurateSumSmemAtomic<BLOCK_THREADS, NUM_BINS, NUM_BIN_COPIES> DeviceAccurateSumSmemAtomic;
     DeviceAccurateSumSmemAtomic().SumToBins(d_in, num_items, d_bins);
+}
+
+/**
+ * \brief Adds tail values that were not processed by atomicadd_kernel.
+ *
+ * Executed with one thread block with at least NUM_BINS threads.
+ * The template parameters
+ * Adds the tail values to the first bin set computed by atomicadd_kernel and updates it.
+ */
+template<
+    int BLOCK_THREADS,
+    int NUM_BINS
+>
+__launch_bounds__(BLOCK_THREADS, 1)
+__global__ void atomicadd_tail_kernel(
+    double* d_tail,
+    int tail_len,
+    double2* d_bins
+    )
+{
+    typedef DeviceAccurateSumSmemAtomic<BLOCK_THREADS, NUM_BINS, 1> DeviceAccurateSumSmemAtomic;
+    DeviceAccurateSumSmemAtomic().AddTail(d_tail, tail_len, d_bins);
 }
 
 enum AccurateFPSumAlgorithm {
@@ -1052,10 +1125,10 @@ struct DeviceAccurateFPSum
         typedef AccumulatorBinsMetadata<BLOCK_THREADS, ITEMS_PER_THREAD, EXPANSIONS, RADIX_BITS> BinMeta;
 
         void *d_bin_sets = NULL;
-        void *d_megabins = NULL;
+        void *d_global_bin_set = NULL;
         ExtremeFlags *d_extreme_flags = NULL;
         void *h_bin_sets = NULL;
-        void *h_megabins = NULL;
+        void *h_global_bin_set = NULL;
         ExtremeFlags *h_extreme_flags = NULL;
         cudaError_t error = cudaSuccess;
 
@@ -1082,10 +1155,10 @@ struct DeviceAccurateFPSum
             }
 
             d_bin_sets          = allocations[0];
-            d_megabins          = NULL; //allocations[0];
+            d_global_bin_set          = NULL; //allocations[0];
             d_extreme_flags     = (ExtremeFlags*)allocations[1];
             h_bin_sets          = malloc(allocation_sizes[0]);
-            h_megabins          = NULL; //malloc(allocation_sizes[0]);
+            h_global_bin_set          = NULL; //malloc(allocation_sizes[0]);
             h_extreme_flags     = (ExtremeFlags*)malloc(allocation_sizes[1]);
 
             if (h_bin_sets == NULL || h_extreme_flags == NULL)
@@ -1103,12 +1176,12 @@ struct DeviceAccurateFPSum
                 num_items,
                 d_bin_sets,
                 0,//temp_reduce_size,
-                d_megabins,
-                0,//temp_megabins_size,
+                d_global_bin_set,
+                0,//temp_global_bin_set_size,
                 d_extreme_flags);
             cudaProfilerStop();
             if (error = CubDebug(cudaMemcpyAsync(h_bin_sets, d_bin_sets, allocation_sizes[0], cudaMemcpyDeviceToHost, stream))) break;
-            //        if (error = CubDebug(cudaMemcpy(h_megabins, d_megabins, allocation_sizes[0], cudaMemcpyDeviceToHost, stream))) break;
+            //        if (error = CubDebug(cudaMemcpy(h_global_bin_set, d_global_bin_set, allocation_sizes[0], cudaMemcpyDeviceToHost, stream))) break;
             if (error = CubDebug(cudaMemcpyAsync(h_extreme_flags, d_extreme_flags, allocation_sizes[1], cudaMemcpyDeviceToHost, stream))) break;
             if (error = CubDebug(cudaStreamSynchronize(stream))) break;
             double result;
@@ -1132,7 +1205,7 @@ struct DeviceAccurateFPSum
         } while(0);
 
         if(h_bin_sets != NULL)          free(h_bin_sets);
-        if(h_megabins != NULL)          free(h_megabins);
+        if(h_global_bin_set != NULL)    free(h_global_bin_set);
         if(h_extreme_flags != NULL)     free(h_extreme_flags);
 
         return error;
@@ -1142,20 +1215,19 @@ struct DeviceAccurateFPSum
     static cudaError_t SumSmemAtomic
     (
         double         *d_in,
-        int             num_items,
-        double          *d_out,
+        int            &num_items,
+        double         *d_out,
         void           *d_temp_storage,
-        size_t          &temp_storage_bytes,
-        cudaStream_t    stream                  = 0)
+        size_t         &temp_storage_bytes,
+        cudaStream_t   stream                  = 0)
     {
         enum
         {
             NUM_SM                  = 12,       //< number of SMs
-            NUM_CONCURRENT_BLOCKS   = 3,        //< number of blocks that run on an SM concurrently
+            BLOCK_WAVE_SIZE         = 3,        //< number of blocks that run on an SM concurrently
             NUM_BLOCK_WAVES         = 8,        //< multiplication factor for number of blocks
-            ACCU_GRID_SIZE = NUM_SM * NUM_CONCURRENT_BLOCKS * NUM_BLOCK_WAVES,
-            ACCU_TILE_SIZE          = 672,
-            NUM_BIN_COPIES_SMEM     = 15,       //< number of set of bins in shared memory
+            BLOCK_THREADS           = 672,
+            NUM_BIN_COPIES_SMEM     = 1,//15,       //< number of set of bins in shared memory
             NUM_BINS                = 64,
             EXPANSIONS              = 2,
         };
@@ -1173,57 +1245,104 @@ struct DeviceAccurateFPSum
             int device_id, sm_count;
             if (error = CubDebug(cudaGetDevice(&device_id))) break;
             if (error = CubDebug(cudaDeviceGetAttribute(&sm_count, cudaDevAttrMultiProcessorCount, device_id))) break;
-            if (sm_count != NUM_SM)
+
+            // A wave of blocks is a set of blocks that execute at the same time on all SMs.
+            // The number of blocks in a wave is #SMs x number of blocks that fit in an SM.
+            // An integer number of
+            int grid_size = sm_count * BLOCK_WAVE_SIZE * NUM_BLOCK_WAVES;
+
+//            printf("fixing sm_count to 1\n");
+//            printf("fixing grid size to 1\n");
+//            sm_count = 1;
+//            grid_size = 1;
+
+
+            int num_tail_items = num_items % (BLOCK_THREADS * grid_size);
+            int num_kernel_items = CUB_ROUND_DOWN_NEAREST(num_items, BLOCK_THREADS * grid_size);
+
+//            if (num_tail_items > 0)
+//            {
+//                printf("[SumSmemAtomic] The smem-atomic accurate summation method currently only supports arrays whose size is a multiple of %d\n", (BLOCK_THREADS * grid_size));
+//                printf("[SumSmemAtomic] Working on %d/%d items.\n", num_kernel_items ,num_items);
+//                num_items = num_kernel_items;
+//            }
+
+            // Temporary storage allocation requirements
+            void* allocations[1];
+            size_t allocation_sizes[1] =
             {
-                printf("[SumSmemAtomic] Please change NUM_SM (=%d) to %d\n", NUM_SM, sm_count);
-                error = cudaErrorInvalidValue;
-                break;
-            }
+                grid_size * NUM_BIN_COPIES_SMEM * (EXPANSIONS * NUM_BINS) * sizeof(double),  // bytes needed for bin sets
+            };
 
-            if (num_items % (ACCU_TILE_SIZE * ACCU_GRID_SIZE))
-            {
-                printf("[SumSmemAtomic] The smem-atomic accurate summation method currently only supports arrays whose size is a multiple of %d\n", (ACCU_TILE_SIZE * ACCU_GRID_SIZE));
-                error = cudaErrorInvalidValue;
-                break;
-            }
+            // Alias the temporary allocations from the single storage blob (or compute the necessary size of the blob)
+            if (CubDebug(error = AliasTemporaries(d_temp_storage, temp_storage_bytes, allocations, allocation_sizes))) break;
 
-            //num_items = CUB_ROUND_UP_NEAREST(num_items, ACCU_TILE_SIZE * ACCU_GRID_SIZE);
-            int accu_reduce_size = ACCU_GRID_SIZE * NUM_BIN_COPIES_SMEM * (EXPANSIONS * NUM_BINS + 1) * sizeof(double);
-
+            // Return if the caller is simply requesting the size of the storage allocation
             if (d_temp_storage == NULL)
-            {
-                temp_storage_bytes = accu_reduce_size;
                 return cudaSuccess;
-            }
 
-
-
-            h_bin_sets = malloc(accu_reduce_size);
+            h_bin_sets = malloc(temp_storage_bytes);
             d_bin_sets = d_temp_storage;
             if (h_bin_sets == NULL)
             {
                 error = cudaErrorMemoryAllocation;
                 break;
             }
-
-            if (error = CubDebug(cudaMemsetAsync(d_temp_storage, 0, accu_reduce_size, stream))) break;
+            if (error = CubDebug(cudaMemsetAsync(d_temp_storage, 0, temp_storage_bytes, stream))) break;
+            if (error = CubDebug(cudaStreamSynchronize(stream))) break;
 
             cudaProfilerStart();
             // Run kernel once to prime caches and check result
-            accuadd_kernel<ACCU_GRID_SIZE, ACCU_TILE_SIZE, NUM_CONCURRENT_BLOCKS, NUM_BINS, NUM_BIN_COPIES_SMEM>
-            <<<ACCU_GRID_SIZE, ACCU_TILE_SIZE, 0, stream>>>(
+            atomicadd_kernel<
+                BLOCK_THREADS,
+                BLOCK_WAVE_SIZE,
+                NUM_BINS,
+                NUM_BIN_COPIES_SMEM>
+            <<<grid_size, BLOCK_THREADS, 0, stream>>>(
                 d_in,
-                num_items,
+                num_kernel_items,
                 (double2*)d_bin_sets);
 
-            if (error = CubDebug(cudaMemcpyAsync(h_bin_sets, d_bin_sets, accu_reduce_size, cudaMemcpyDeviceToHost, stream))) break;
+            atomicadd_tail_kernel<
+                BLOCK_THREADS,
+                NUM_BINS>
+            <<<1, BLOCK_THREADS, 0, stream>>>(
+                &d_in[num_kernel_items],
+                num_tail_items,
+                (double2*)d_bin_sets);
+
+            if (error = CubDebug(cudaMemcpyAsync(h_bin_sets, d_bin_sets, temp_storage_bytes, cudaMemcpyDeviceToHost, stream))) break;
             if (error = CubDebug(cudaStreamSynchronize(stream))) break;
+
+            // Sum all the bins to get final result
+            // Summation order is from smaller to larger bin words
             double result;
             AccumulatorDouble<EXPANSIONS+1> total_sum(0.0);
-            for (int i = 0; i < accu_reduce_size / sizeof(double); i++)
+
+            for (int ibin = 0; ibin < NUM_BINS; ibin++)
             {
-                total_sum.Add(((double*)h_bin_sets)[i]);
+                for (int iword = 0; iword < EXPANSIONS; iword++)
+                {
+                    for (int ibinset = 0; ibinset < grid_size; ibinset++)
+                    {
+                        for (int ibincopy = 0; ibincopy < NUM_BIN_COPIES_SMEM; ibincopy++)
+                        {
+                            int idx =
+                                ibinset * NUM_BIN_COPIES_SMEM * NUM_BINS * EXPANSIONS +
+                                ibincopy * NUM_BINS * EXPANSIONS +
+                                ibin * EXPANSIONS +
+                                iword;
+                            total_sum.Add(((double*)h_bin_sets)[idx]);
+                        }
+                    }
+                }
             }
+//            for (int i = 0; i < temp_storage_bytes / sizeof(double); i++)
+//            {
+//                total_sum.Add(((double*)h_bin_sets)[i]);
+//                total_sum.print();
+//                printf("\n");
+//            }
             total_sum.Normalize();
             result = total_sum[0];
             if (error = CubDebug(cudaMemcpyAsync(d_out, &result, sizeof(double), cudaMemcpyHostToDevice, stream))) break;

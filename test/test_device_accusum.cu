@@ -236,6 +236,8 @@ void InitializeExponentSort(
     int         num_items,
     unsigned long long seed = 1234ULL)
 {
+    int num_blocks_fix_input = 28;
+    int num_threads_fix_input = 256;
     switch (GEN_MODE)
     {
     case GEN_UNINITIALIZED:
@@ -245,7 +247,8 @@ void InitializeExponentSort(
     case GEN_CONSTANT_FULL_MANTISSA:
     case GEN_TWO_VALS_FULL_MANTISSA:
     case GEN_TWO_VALS_LAST_MANTISSA_BIT:
-        fix_input<<<14*2, 256>>>(d_in, num_items, GEN_MODE);
+
+        fix_input<<<num_blocks_fix_input, num_threads_fix_input>>>(d_in, num_items, GEN_MODE);
         CubDebugExit(cudaDeviceSynchronize());
         break;
     case GEN_RANDOM:
@@ -258,7 +261,7 @@ void InitializeExponentSort(
         CURAND_CALL(curandSetPseudoRandomGeneratorSeed(gen, seed));
         CURAND_CALL(curandGenerate(gen, (unsigned int*)d_in, num_items*2 ));  //< generate 2 32-bit words for every double
         CURAND_CALL(curandDestroyGenerator(gen));
-        fix_input<<<14*2, 256>>>(d_in, num_items, GEN_MODE);
+        fix_input<<<num_blocks_fix_input, num_threads_fix_input>>>(d_in, num_items, GEN_MODE);
         CubDebugExit(cudaDeviceSynchronize());
         break;
     }
@@ -281,7 +284,6 @@ struct TestExponentSort
         ACCUSUM_SMEM_ATOMIC
     };
 
-//    static const int SM_COUNT = 13;
     static const int MAX_BLOCK_THREADS = 256;
     static const int MAX_ITEMS_PER_THREAD = 8;
     static const int MAX_EXPANSIONS = 8;
@@ -294,8 +296,8 @@ struct TestExponentSort
     clock_t *h_elapsed  ;
     double *d_in       ;
     double *d_out      ;
-    void   *d_megabins ;
-    double *h_megabins ;
+    void   *d_global_bins ;
+    double *h_global_bins ;
     double *h_map_temp_reduce;
     ExtremeFlags* d_extreme_flags;
     ExtremeFlags* h_extreme_flags;
@@ -324,7 +326,7 @@ struct TestExponentSort
         h_reference        = new double[MAX_ITEMS];
         h_elapsed          = new clock_t[max_grid_size];
 
-        h_megabins          = new double[(MAX_EXPANSIONS + 1) * MAX_BINS];
+        h_global_bins          = new double[(MAX_EXPANSIONS + 1) * MAX_BINS];
         h_extreme_flags     = new ExtremeFlags[1];
 
 //        int num_iterations = CUB_QUOTIENT_CEILING(MAX_ITEMS, MAX_ITEMS_PER_BLOCK);
@@ -335,7 +337,7 @@ struct TestExponentSort
         CubDebugExit(cudaMalloc((void**)&d_out,         sizeof(double)));
         CubDebugExit(cudaHostAlloc((void**)&h_map_temp_reduce, max_temp_reduce_size, cudaHostAllocMapped));
 
-        CubDebugExit(cudaMalloc((void**)&d_megabins,         sizeof(double) * (MAX_EXPANSIONS + 1) * MAX_BINS ));
+        CubDebugExit(cudaMalloc((void**)&d_global_bins,         sizeof(double) * (MAX_EXPANSIONS + 1) * MAX_BINS ));
         CubDebugExit(cudaMalloc((void**)&d_extreme_flags,         sizeof(ExtremeFlags)));
 
         CubDebugExit(cudaEventCreate(&start));
@@ -352,8 +354,8 @@ struct TestExponentSort
         if (d_out) CubDebugExit(cudaFree(d_out));
         if (h_map_temp_reduce) cudaFreeHost(h_map_temp_reduce);
 
-        if (h_megabins) delete[] h_megabins;
-        if (d_out) CubDebugExit(cudaFree(d_megabins));
+        if (h_global_bins) delete[] h_global_bins;
+        if (d_out) CubDebugExit(cudaFree(d_global_bins));
         if (h_extreme_flags) delete[] h_extreme_flags;
         if (d_extreme_flags) CubDebugExit(cudaFree(d_extreme_flags));
 
@@ -363,6 +365,7 @@ struct TestExponentSort
 
     void Test()
     {
+        // see definition of Test<...> below
         Test<ACCUSUM_SORT_REDUCE, 128, 16*16*2, 2, 2, 4, 8, GEN_RANDOM>();
     }
 
@@ -376,14 +379,14 @@ struct TestExponentSort
         int MIN_CONCURRENT_BLOCKS,
         GenModeDbl GEN_MODE
     >
-    float Test(unsigned num_items = (1 << 25), bool validate = false, unsigned long long seed = 1234ULL)
+    float Test(int num_items = (1 << 25), bool validate = false, unsigned long long seed = 1234ULL)
     {
         float kernel_time = 0.f;
         float thrpt_gdbl_sec = 0.f;
 
         assert(num_items <= MAX_ITEMS);
 
-        // generate input
+        // generate input, if not previously generated
         if (gen_mode != GEN_MODE || _seed != seed)
         {
             InitializeExponentSort<GEN_MODE>(h_in, d_in, h_reference, MAX_ITEMS, _seed);
@@ -398,12 +401,6 @@ struct TestExponentSort
             const int grid_size = CUB_ROUND_UP_NEAREST(CUB_MAX(MIN_GRID_SIZE, CUB_QUOTIENT_CEILING(num_items, BinMeta::BIN_CAPACITY)), sm_count);
             num_items = CUB_ROUND_UP_NEAREST(num_items, TILE_SIZE * grid_size);
 
-            // compute reference sum
-            if (validate)
-            {
-                *h_reference = sum_mpfr(h_in, num_items);
-            }
-
             // allocate temporary storage
             void   *d_temp_storage = NULL;
             size_t temp_storage_bytes = 0;
@@ -411,6 +408,12 @@ struct TestExponentSort
                 (d_in, num_items, d_out, d_temp_storage, temp_storage_bytes);
             cudaDeviceSynchronize();
             CubDebugExit(cudaMalloc((void**)&d_temp_storage, temp_storage_bytes ));
+
+            // compute reference sum
+            if (validate)
+            {
+                *h_reference = sum_mpfr(h_in, num_items);
+            }
 
             GpuTimer timer;
             timer.Start();
@@ -430,22 +433,17 @@ struct TestExponentSort
             // Benchmark: K40c  random data    4.0GDbl/sec
             //                  constant data  0.2GDbl/sec
 
-            const int ACCU_TILE_SIZE = 672;
-            const int NUM_BIN_COPIES_SMEM = 15;
-            const int accu_grid_size = 3 * sm_count * 8;
-            num_items = CUB_ROUND_UP_NEAREST(num_items, ACCU_TILE_SIZE * accu_grid_size);
+            // allocate temporary storage
+            void   *d_temp_storage = NULL;
+            size_t temp_storage_bytes = 0;
+            CubDebugExit(DeviceAccurateFPSum::SumSmemAtomic(d_in, num_items, d_out, d_temp_storage, temp_storage_bytes));
+            CubDebugExit(cudaMalloc((void**)&d_temp_storage, temp_storage_bytes ));
 
             // compute reference sum
             if (validate)
             {
                 *h_reference = sum_mpfr(h_in, num_items);
             }
-
-            // allocate temporary storage
-            void   *d_temp_storage = NULL;
-            size_t temp_storage_bytes = 0;
-            CubDebugExit(DeviceAccurateFPSum::SumSmemAtomic(d_in, num_items, d_out, d_temp_storage, temp_storage_bytes));
-            CubDebugExit(cudaMalloc((void**)&d_temp_storage, temp_storage_bytes ));
 
             GpuTimer timer;
             timer.Start();
@@ -491,7 +489,7 @@ struct Range {
 };
 
 template <int TEST_NUM, typename SETUP>
-float RunTest(Int2Type<TEST_NUM> test_num, SETUP setup, TestExponentSort& testobj, unsigned num_items = (1 << 25), bool validate = false, unsigned long long seed = 1234ULL)
+float RunTest(Int2Type<TEST_NUM> test_num, SETUP setup, TestExponentSort& testobj, int num_items = (1 << 25), bool validate = false, unsigned long long seed = 1234ULL)
 {
     const int RANGE1 = (SETUP::WarpsPerBlock::END     - SETUP::WarpsPerBlock::BEGIN + 1)  ;
     const int RANGE2 = (SETUP::BlocksPerSm::END       - SETUP::BlocksPerSm::BEGIN + 1) ;
@@ -539,19 +537,19 @@ float RunTest(Int2Type<TEST_NUM> test_num, SETUP setup, TestExponentSort& testob
 }
 
 template <int TEST_NUM, int NUM_TESTS, typename SETUP>
-void RunTests(Int2Type<TEST_NUM> test_num, Int2Type<NUM_TESTS> num_tests, SETUP setup, TestExponentSort& testobj, unsigned num_items = (1 << 25), bool validate = false, unsigned long long seed = 1234ULL)
+void RunTests(Int2Type<TEST_NUM> test_num, Int2Type<NUM_TESTS> num_tests, SETUP setup, TestExponentSort& testobj, int num_items = (1 << 25), bool validate = false, unsigned long long seed = 1234ULL)
 {
     g_test_thrpt_gdbl_sec[TEST_NUM] = RunTest(Int2Type<TEST_NUM>(), setup, testobj, num_items, validate, seed);
     RunTests(Int2Type<TEST_NUM + 1>(), num_tests, setup, testobj, num_items, validate, seed);
 }
 
 template <int NUM_TESTS, typename SETUP>
-void RunTests(Int2Type<NUM_TESTS> test_num, Int2Type<NUM_TESTS> num_tests, SETUP setup, TestExponentSort& testobj, unsigned num_items = (1 << 25), bool validate = false, unsigned long long seed = 1234ULL)
+void RunTests(Int2Type<NUM_TESTS> test_num, Int2Type<NUM_TESTS> num_tests, SETUP setup, TestExponentSort& testobj, int num_items = (1 << 25), bool validate = false, unsigned long long seed = 1234ULL)
 {
 }
 
 template <int FIRST, int COUNT, typename SETUP>
-void RunTests(TestExponentSort& testobj, unsigned num_items, bool validate, unsigned long long seed)
+void RunTests(TestExponentSort& testobj, int num_items, bool validate, unsigned long long seed)
 {
     assert(FIRST + COUNT <= (sizeof(g_test_thrpt_gdbl_sec) / sizeof(g_test_thrpt_gdbl_sec[0])) );
 
@@ -586,7 +584,7 @@ void RunTests(TestExponentSort& testobj, unsigned num_items, bool validate, unsi
 }
 
 template <typename SETUP>
-void RunTests(TestExponentSort& testobj, unsigned num_items, bool validate, unsigned long long seed)
+void RunTests(TestExponentSort& testobj, int num_items, bool validate, unsigned long long seed)
 {
     const int NUM_TESTS =
         (SETUP::WarpsPerBlock::END     - SETUP::WarpsPerBlock::BEGIN + 1)     *
@@ -727,13 +725,13 @@ void TestExponentAll()
     RunTests<SetupDefault>(testobj, num_items, validate, seed);
     RunTests<SetupCustom>(testobj, num_items, validate, seed);
 
-    int num_items_options[] = {
+//    int num_items_options[] = {
 //        1<<16,1<<17, 1<<18, 1<<19,
 //        1<<20, 1<<21, 1<<22, 1<<23,
 //        1<<24, 1<<25, 1<<26, 1<<27,
 //        1<<28,
 //        1<<29
-    };
+//    };
 //    for (int i = 0; i < sizeof(num_items_options) / sizeof(int); i++)
 //    {
 //        num_items = num_items_options[i];
