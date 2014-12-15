@@ -13,12 +13,12 @@ DOCUMENTATION
 INSTALLATION
 - The test currently uses MPFR library to validate the result. To install MPFR, please follow the installation instructions at http://www.mpfr.org .
 - To build the test on a 64-bit Linux machine with a GPU with compute capability 3.5, run from test\ :
->>  make sm=350 force64=1 test_thread_reduce_extended
-- Then run the executable in bin\test_thread_reduce_extended.
+>>  make sm=350 force64=1 test_device_accusum
+- Then run the executable in bin\test_device_accusum.
 
 CODE ORIENTATION
 - cub\device\device_accusum.cuh			The summation function implementation, including CPU and GPU code, and additional utility functions.
-- test\test_thread_reduce_extended.cu	Test infrastructure for the accurate summation function
+- test\test_device_accusum.cu	Test infrastructure for the accurate summation function
 
 IMPLEMENTATION
 - The implementation contains two summation methods that we call (1) sort-reduce and (2) smem-atomic. Both methods have two steps: partial per-thread-block reduction of the input into sets of bins on the GPU, and final summation on the CPU. The methods use an extended version of Knuth's TwoSum method to keep track of round-off error.
