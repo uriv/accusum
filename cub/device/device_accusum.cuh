@@ -92,9 +92,9 @@ template<typename T> struct RegVector<T,1> {
     __host__ __device__ __forceinline__
     RegVector(const T& first, const T& default_val) : value(first) {}
     __host__ __device__ __forceinline__
-    T& operator[](int idx) { assert(idx == 0); return value; }
+    T operator[](int idx) const { assert(idx == 0); return value; }
     __host__ __device__ __forceinline__
-    const T& operator[](int idx) const { assert(idx == 0); return value; }
+    void set(int i, T val) { if (i == 0) value = val; }
     template<int I> __host__ __device__ __forceinline__
     T& operator[](Int2Type<0> idx) { return value; }
     template<int I> __host__ __device__ __forceinline__
@@ -119,18 +119,20 @@ template<typename T, int N> struct RegVector : public RegVector<T,N-1>
     __host__ __device__ __forceinline__
     RegVector(const T& first, const T& default_val) : RegVector<T,N-1>(first, default_val), value(default_val) {}
 
-    __host__ __device__ __forceinline__ T& operator[](int idx) {
+    __host__ __device__ __forceinline__ T operator[] (int idx) const {
         if (idx == N-1)
             return value;
         else
             return (*(RegVector<T,N-1>*)this)[idx];
     }
-    __host__ __device__ __forceinline__ const T& operator[](int idx) const {
-        if (idx == N-1)
-            return value;
-        else
-            return (*(RegVector<T,N-1>*)this)[idx];
+
+    __host__ __device__ __forceinline__
+    void set(int i, T val)
+    {
+        if (i == N-1) value = val;
+        else ((RegVector<T,N-1>&)(*this)).set(i, val);
     }
+
     template<int I> __host__ __device__ __forceinline__ T& operator[](Int2Type<I> idx) { return ((RegVector<T,I+1>*)this)->value; }
     template<int I> __host__ __device__ __forceinline__ const T& operator[](Int2Type<I> idx) const { return ((RegVector<T,I+1>*)this)->value; }
 };
@@ -271,8 +273,8 @@ struct AccumulatorDouble
      *
      * Supports runtime and compile-time indexing.
      */
-    __host__ __device__ __forceinline__ double& operator[](int i) { return _vec[i]; }
-    __host__ __device__ __forceinline__ const double& operator[](int i) const { return _vec[i]; }
+    __host__ __device__ __forceinline__ double operator[](int i) const { return _vec[i]; }
+    __host__ __device__ __forceinline__ void set(int i, const double& val) { _vec.set(i,val); }
     template<int INDEX> __host__ __device__ __forceinline__ double& operator[](Int2Type<INDEX> i) { return _vec[i]; }
     template<int INDEX> __host__ __device__ __forceinline__ const double& operator[](Int2Type<INDEX> i) const { return _vec[i]; }
 
@@ -407,7 +409,8 @@ protected:
         {
             if (!short_circuit || rem != 0.0)
             {
-                _vec[i] = twoSum(_vec[i], rem, rem);   //< add rem and get new remainder
+                _vec.set(i, twoSum(_vec[i], rem, rem));
+
                 if (isinf(_vec[i]))
                 {
                     rem = 0.0;
@@ -435,10 +438,11 @@ protected:
 template<>
 __host__ __device__ __forceinline__ double AccumulatorDouble<2>::add(const double& b)
 {
+    Int2Type<1> I1;
     const RegVector<double, 2>& a = _vec;
     RegVector<double, 2> s, t;
     s = twoSum(a[0], b);
-    s[1] += a[1];
+    s[I1] += a[1];
     fix_inf(s);
     s = quickTwoSum(s[0], s[1]);
     _vec = s;
@@ -453,14 +457,15 @@ __host__ __device__ __forceinline__ void AccumulatorDouble<2>::add(const Accumul
     //    {
     //        add(other[0]);
     //    }
+    Int2Type<1> I1;
     const RegVector<double, 2>& a = _vec;
     RegVector<double, 2> b = other._vec;
     RegVector<double, 2> s, t;
     s = fix_inf(twoSum(a[0], b[0]));
     t = twoSum(a[1], b[1]);
-    s[1] += t[0];
+    s[I1] += t[0];
     s = fix_inf(quickTwoSum(s[0], s[1]));
-    s[1] += t[1];
+    s[I1] += t[1];
     s = fix_inf(quickTwoSum(s[0], s[1]));
     _vec = s;
 }
@@ -654,23 +659,10 @@ public:
         }
 
         /// INITIALIZE BINS IN SHARED MEMORY
-        {
-            double* iptr = (double*)bins;
-            const int COUNT = Meta::NUM_BINS * Meta::BIN_SIZE_BYTES / sizeof(double);
-            #pragma unroll
-            for (int i = 0; i < COUNT / BLOCK_THREADS; i++)
-            {
-                iptr[i * BLOCK_THREADS + threadIdx.x] = 0;
-            }
-            if (COUNT % BLOCK_THREADS > 0)
-            {
-                int i = COUNT / BLOCK_THREADS;
-                if (i * BLOCK_THREADS + threadIdx.x < COUNT)
-                {
-                    iptr[i * BLOCK_THREADS + threadIdx.x] = 0;
-                }
-            }
-        }
+        asm("// INIT SMEM {");
+        const int COUNT = Meta::NUM_BINS * Meta::BIN_SIZE_BYTES / sizeof(double);
+        InitSmemAsync<COUNT, double>((double*)bins, 0.0);
+        asm("// INIT SMEM }");
 
         if (threadIdx.x == 0)
         {
@@ -693,12 +685,17 @@ public:
             // Load tile
 //            BlockLoad(temp_storage.load).Load(d_in, items);
 //            __syncthreads();
+            asm("// Load items {");
             // Load items in direct striped order
             #pragma unroll
             for (int ITEM = 0; ITEM < ITEMS_PER_THREAD; ITEM++)
             {
                 items[ITEM] = d_in[ITEM * BLOCK_THREADS + threadIdx.x];
+//                if (items[ITEM] > 1.0+1e-6)
+//                    printf("!!! %f\n", items[ITEM]);
             }
+
+            asm("// Load items }");
             // BINS ARE NOT BEING UPDATED
             // ITEMS ARE BEING USED
 
@@ -707,10 +704,15 @@ public:
             ///////////////////////////////////////////////
 
             /// RADIX SORT BY (SOME) EXPONENT BITS
+            asm("// SORT {");
+            __syncthreads();
+            // SHARED MEM IN USE FOR SORT
             UnsignedBits (*cvt_to_ubits)[ITEMS_PER_THREAD] = (UnsignedBits(*)[ITEMS_PER_THREAD])items;
             BlockRadixSort(temp_storage.sort).Sort(*cvt_to_ubits,EXP_BIT_SORT_BEGIN,EXP_BIT_SORT_END);
+            asm("// SORT }");
 
             /// REDUCE-BY-KEY (SETUP)
+            asm("// REDUCE-BY-KEY {");
             BinIdT          bin_ids     [ITEMS_PER_THREAD];
             FlagT           tail_flags  [ITEMS_PER_THREAD];
             AccumBinPair    zip         [ITEMS_PER_THREAD];
@@ -727,6 +729,8 @@ public:
                 zip[i].bin = bin_ids[i];
             }
             __syncthreads();
+            // SHARED MEM IN USE FOR SCAN AND FLAGS
+            asm("// REDUCE-BY-KEY }");
 
             // BINS ARE BEING UPDATED
             // ITEMS ARE NOT BEING USED
@@ -756,6 +760,7 @@ public:
             d_in += gridDim.x * TILE_SIZE;
         }
         __syncthreads();
+        // SHARED MEM NOT IN USE
         // BINS ARE NOT BEING UPDATED
 
         /// STORE BINS TO GLOBAL MEM
@@ -811,6 +816,25 @@ public:
             return retval;
         }
     };
+
+    template<int COUNT, typename T>
+    static __device__ __forceinline__ void InitSmemAsync(T* array, T val)
+    {
+        T* iptr = array;
+        #pragma unroll
+        for (int i = 0; i < COUNT / BLOCK_THREADS; i++)
+        {
+            iptr[i * BLOCK_THREADS + threadIdx.x] = val;
+        }
+        if (COUNT % BLOCK_THREADS > 0)
+        {
+            int i = COUNT / BLOCK_THREADS;
+            if (i * BLOCK_THREADS + threadIdx.x < COUNT)
+            {
+                iptr[i * BLOCK_THREADS + threadIdx.x] = val;
+            }
+        }
+    }
 
     static __device__ __forceinline__ BinIdT bin_id(const double& v)
     {
