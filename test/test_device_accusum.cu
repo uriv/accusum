@@ -650,7 +650,7 @@ struct SetupCustom : public SetupDefault
 //    typedef Range<1,1>      GenerationMode;
 };
 
-void TestExponentCustom()
+void TestCustom()
 {
 
 
@@ -1028,7 +1028,7 @@ int main(int argc, char** argv)
     // Remove comments to tune default setup for the GPU in use. May increase build time.
 //     Tune<0>();
 
-    TestExponentCustom();
+    TestCustom();
     cudaDeviceReset();
     return 0;
 }
