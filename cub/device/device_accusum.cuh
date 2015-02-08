@@ -46,6 +46,11 @@
 #include <cub/block/block_discontinuity.cuh>
 #include <cub/block/block_scan.cuh>
 
+#include <cub/device/device_histogram.cuh>
+
+#include <cub/iterator/transform_input_iterator.cuh>
+#include <cub/iterator/tex_obj_input_iterator.cuh>
+
 #include <cuda_profiler_api.h>
 
 /// Optional outer namespace(s)
@@ -182,14 +187,14 @@ struct AccumulatorDouble
     typedef AccumulatorDouble<Expansions> Type;
     typedef RegVector<double,Expansions> TVec;
 
+    typedef Int2Type<1> DEFAULT_FIX_INFTY;
+
     TVec _vec;  //vector of SIZE doubles stored as named registers. _vec[0] is the most significant word.
 
     __host__ __device__ __forceinline__ AccumulatorDouble() {}                                   //< uninitialized
-
     __host__ __device__ __forceinline__ AccumulatorDouble(double fill) : _vec(fill) {}          //< fill all words with a value
-
     __host__ __device__ __forceinline__ AccumulatorDouble(double first, double default_val)    //< sets word 0 to first, and all the others to default_val
-    : _vec(first, default_val) {}
+        : _vec(first, default_val) {}
 
     /**
      * \brief Loads values from an array
@@ -218,7 +223,13 @@ struct AccumulatorDouble
      */
     __host__ __device__ __forceinline__ double Add(const double &v)
     {
-        return add(v);
+        return add(v, DEFAULT_FIX_INFTY());
+    }
+
+    template <int FIX_INFTY>
+    __host__ __device__ __forceinline__ double Add(const double &v)
+    {
+        return add(v, Int2Type<FIX_INFTY>());
     }
 
     /**
@@ -226,12 +237,24 @@ struct AccumulatorDouble
      */
     __host__ __device__ __forceinline__ void Add(const Type &v)
     {
-        add(v);
+        add(v, DEFAULT_FIX_INFTY());
+    }
+
+    template <int FIX_INFTY>
+    __host__ __device__ __forceinline__ void Add(const Type &v)
+    {
+        add(v, Int2Type<FIX_INFTY>());
     }
 
     /**
      * \brief Serially adds the values of an array to the accumulator
      */
+    __host__ __device__ __forceinline__ void Add(const double* arr, int len)
+    {
+        Add< DEFAULT_FIX_INFTY::VALUE >(arr,len);
+    }
+
+    template<int FIX_INFTY>
     __host__ __device__ __forceinline__ void Add(const double* arr, int len)
     {
         if (len < 0)
@@ -241,7 +264,7 @@ struct AccumulatorDouble
 
         for (int i = 0; i < len; i++)
         {
-            add(arr[i]);
+            add(arr[i], Int2Type<FIX_INFTY>());
         }
     }
 
@@ -251,10 +274,16 @@ struct AccumulatorDouble
     template<int LENGTH>
     __host__ __device__ __forceinline__ void Add(const double* arr)
     {
+        Add< LENGTH, DEFAULT_FIX_INFTY::VALUE >(arr);
+    }
+
+    template<int LENGTH, int FIX_INFTY>
+    __host__ __device__ __forceinline__ void Add(const double* arr)
+    {
 #pragma unroll
         for (int i = 0; i < LENGTH; i++)
         {
-            add(arr[i]);
+            add(arr[i], Int2Type<FIX_INFTY>());
         }
     }
 
@@ -349,7 +378,13 @@ protected:
     double twoSum(double a, double b, double& rem)
     {
     #if 0
-        return (fabs(a) >= fabs(b) ? quickTwoSum(a,b) : quickTwoSum(b,a));
+        // works only for positive numbers
+        double mn = min(a,b);
+        double mx = max(a,b);
+        return quickTwoSum(mx,mn,rem);
+
+        // always works but performance is worse
+        //return (fabs(a) >= fabs(b) ? quickTwoSum(a,b,rem) : quickTwoSum(b,a,rem));
     #else
         double s, v;
         s = a + b;
@@ -385,21 +420,23 @@ protected:
         return RegVector<double, 2>(s, r);
     }
 
-    __host__ __device__ __forceinline__ void add(const Type& v)
+    template<int FIX_INFTY>
+    __host__ __device__ __forceinline__ void add(const Type& v, Int2Type<FIX_INFTY> fix_infty)
     {
 #pragma unroll
         for (int i = 0; i < SIZE; i++)
         {
-            double rem = add(v[i]);
+            double rem = add(v[i], fix_infty);
             if (rem != 0.0)
             {
                 Normalize();
-                add(rem);
+                add(rem, fix_infty);
             }
         }
     }
 
-    __host__ __device__ __forceinline__ double add(const double& v)
+    template<int FIX_INFTY>
+    __host__ __device__ __forceinline__ double add(const double& v, Int2Type<FIX_INFTY> fix_infty)
     {
         // TODO: tune with/without break for best performance
         const bool short_circuit = true;
@@ -411,9 +448,12 @@ protected:
             {
                 _vec.set(i, twoSum(_vec[i], rem, rem));
 
-                if (isinf(_vec[i]))
+                if (FIX_INFTY)
                 {
-                    rem = 0.0;
+                    if (isinf(_vec[i]))
+                    {
+                        rem = 0.0;
+                    }
                 }
             }
         }
@@ -436,21 +476,32 @@ protected:
  */
 
 template<>
-__host__ __device__ __forceinline__ double AccumulatorDouble<2>::add(const double& b)
+__host__ __device__ __forceinline__ RegVector<double,2> AccumulatorDouble<2>::fix_inf(RegVector<double,2> accum)
+{
+    RegVector<double,2> out = accum;
+    out.set(1,out[1] * (0 == isinf(out[0])));
+    return out;
+}
+
+template<>
+template<int FIX_INFTY>
+__host__ __device__ __forceinline__ double AccumulatorDouble<2>::add<FIX_INFTY>(const double& b, Int2Type<FIX_INFTY>)
 {
     Int2Type<1> I1;
     const RegVector<double, 2>& a = _vec;
     RegVector<double, 2> s, t;
     s = twoSum(a[0], b);
     s[I1] += a[1];
-    fix_inf(s);
+    if (FIX_INFTY)
+        fix_inf(s);
     s = quickTwoSum(s[0], s[1]);
     _vec = s;
     return 0.;
 }
 
 template<>
-__host__ __device__ __forceinline__ void AccumulatorDouble<2>::add(const AccumulatorDouble<2>& other)
+template<int FIX_INFTY>
+__host__ __device__ __forceinline__ void AccumulatorDouble<2>::add<FIX_INFTY>(const AccumulatorDouble<2>& other, Int2Type<FIX_INFTY>)
 {
     // OPTIMIZE: instead of running fix_inf, raise an +inf/-inf flag if isinf is true. If flag is up, ignore reduction result.
     //    if (other[1] == 0.0)
@@ -461,12 +512,18 @@ __host__ __device__ __forceinline__ void AccumulatorDouble<2>::add(const Accumul
     const RegVector<double, 2>& a = _vec;
     RegVector<double, 2> b = other._vec;
     RegVector<double, 2> s, t;
-    s = fix_inf(twoSum(a[0], b[0]));
+    s = twoSum(a[0], b[0]);
+    if (FIX_INFTY)
+        s = fix_inf(s);
     t = twoSum(a[1], b[1]);
     s[I1] += t[0];
-    s = fix_inf(quickTwoSum(s[0], s[1]));
+    s = quickTwoSum(s[0], s[1]);
+    if (FIX_INFTY)
+        s = fix_inf(s);
     s[I1] += t[1];
-    s = fix_inf(quickTwoSum(s[0], s[1]));
+    s = quickTwoSum(s[0], s[1]);
+    if (FIX_INFTY)
+        s = fix_inf(s);
     _vec = s;
 }
 
@@ -475,7 +532,9 @@ __host__ __device__ __forceinline__ void AccumulatorDouble<2>::add(const Accumul
  */
 template<int Expansion>
 __host__ __device__ __forceinline__
-AccumulatorDouble<Expansion> operator+(const AccumulatorDouble<Expansion>& a, const AccumulatorDouble<Expansion>& b)
+AccumulatorDouble<Expansion> operator+(
+    const AccumulatorDouble<Expansion>& a,
+    const AccumulatorDouble<Expansion>& b)
 {
     AccumulatorDouble<Expansion> sum = a;
     sum.Add(b);
@@ -562,6 +621,7 @@ public:
         BLOCK_THREADS           = BLOCK_DIM_X * BLOCK_DIM_Y * BLOCK_DIM_Z,
         DOUBLE_MANTISSA_BITS    = 52,
         DOUBLE_EXPONENT_BITS    = 11,
+        ITEMS_PER_THREAD_TAIL = 1,    //< for remaining items after completing all the full tiles
     };
 
     typedef AccumulatorBinsMetadata<BLOCK_DIM_X, ITEMS_PER_THREAD, EXPANSIONS, RADIX_BITS, BLOCK_DIM_Y, BLOCK_DIM_Z> Meta;
@@ -582,7 +642,10 @@ public:
     typedef BlockLoad<double*, BLOCK_THREADS, ITEMS_PER_THREAD, BLOCK_LOAD_WARP_TRANSPOSE> BlockLoad;
     typedef BlockRadixSort<
         UnsignedBits, BLOCK_THREADS, ITEMS_PER_THREAD, NullType, Meta::RADIX_BITS,
-        CONFIG_SORT_MEMOIZE, BLOCK_SCAN_WARP_SCANS, cudaSharedMemBankSizeEightByte> BlockRadixSort;
+        CONFIG_SORT_MEMOIZE, BLOCK_SCAN_WARP_SCANS, cudaSharedMemBankSizeEightByte> BlockRadixSortFullTiles;
+    typedef BlockRadixSort<
+            UnsignedBits, BLOCK_THREADS, ITEMS_PER_THREAD_TAIL, NullType, Meta::RADIX_BITS,
+            CONFIG_SORT_MEMOIZE, BLOCK_SCAN_WARP_SCANS, cudaSharedMemBankSizeEightByte> BlockRadixSortTail;
     typedef BlockDiscontinuity<BinIdT, BLOCK_THREADS> BlockDiscontinuity;
     typedef BlockScan<AccumBinPair, BLOCK_THREADS, BLOCK_SCAN_WARP_SCANS> BlockScan;
 
@@ -592,7 +655,11 @@ public:
     {
         union
         {
-            typename BlockRadixSort::TempStorage     sort;
+            union
+            {
+                typename BlockRadixSortFullTiles::TempStorage  sort;
+                typename BlockRadixSortTail::TempStorage       sort_tail;
+            };
             struct {
 //                typename BlockLoad::TempStorage          load;
                 typename BlockDiscontinuity::TempStorage flag;
@@ -627,8 +694,9 @@ public:
     /**
      * Defines
      */
+    template<typename    InputIteratorT>
     __device__ __forceinline__ void SumToBins(
-        double         *d_in,                 //< [in]  input array
+        InputIteratorT  d_in,                 //< [in]  input array
         int             num_items,            //< [in]  input array size
         void           *d_accumulators,       //< [out] accumulator bins
         size_t          accumulators_bytes,   //< [in]  size of accumulator bins array in bytes
@@ -641,27 +709,25 @@ public:
             return;             //< for warmup
         }
 
-        enum {
-            TILE_SIZE             = (BLOCK_THREADS * ITEMS_PER_THREAD),
-            EXP_BIT_SORT_BEGIN    = (DOUBLE_MANTISSA_BITS + Meta::EXPONENT_BITS_PER_BIN),
-            EXP_BIT_SORT_END      = (DOUBLE_MANTISSA_BITS + DOUBLE_EXPONENT_BITS),
-        };
-
-        ///////////////////////////////////////////////////////////////////////
-        __shared__ Accumulator bins[Meta::NUM_BINS];
-        ///////////////////////////////////////////////////////////////////////
-        double items[ITEMS_PER_THREAD];
-        ///////////////////////////////////////////////////////////////////////
-
         if (d_extreme_flags->nan)   //< if nan flag already marked then abort. result is nan.
         {
             return;
         }
 
+        ///////////////////////////////////////////////////////////////////////
+        __shared__ Accumulator bins[Meta::NUM_BINS];
+        __shared__ int s_FIX_INFTY;
+        ///////////////////////////////////////////////////////////////////////
+
+        enum {
+            TILE_SIZE              = (BLOCK_THREADS * ITEMS_PER_THREAD),
+        };
+
         /// INITIALIZE BINS IN SHARED MEMORY
         asm("// INIT SMEM {");
         const int COUNT = Meta::NUM_BINS * Meta::BIN_SIZE_BYTES / sizeof(double);
         InitSmemAsync<COUNT, double>((double*)bins, 0.0);
+        s_FIX_INFTY = 0;
         asm("// INIT SMEM }");
 
         if (threadIdx.x == 0)
@@ -669,16 +735,64 @@ public:
             temp_storage.extreme_flags.nan = 0;
         }
 
-        /// PROCESS INPUT
-
         // add offset that depends on block index
-        d_accumulators = (void*)((char*)d_accumulators + blockIdx.x * Meta::NUM_BINS * Meta::BIN_SIZE_BYTES);
-        d_in += blockIdx.x * TILE_SIZE;
-        int items_per_block = num_items / gridDim.x;
+        int tiles_in_grid = gridDim.x * TILE_SIZE;
+        int num_items_full_tiles = CUB_ROUND_DOWN_NEAREST(num_items, tiles_in_grid);
+        int num_remaining_items = num_items - num_items_full_tiles;
+
+        Int2Type<1> full_tiles;
+        Int2Type<0> non_full_tiles;
+
+        SumToBins_internal(d_in+0,                    d_in+num_items_full_tiles, num_items_full_tiles, d_extreme_flags, bins, s_FIX_INFTY, full_tiles);
+        SumToBins_internal(d_in+num_items_full_tiles, d_in+num_items,            num_remaining_items,  d_extreme_flags, bins, s_FIX_INFTY, non_full_tiles);
+
+
+        /// STORE BINS TO GLOBAL MEM
+        StoreBinsToGlobalMem(d_accumulators, bins);
+
+        s_FIX_INFTY = 0;
+
+        if (threadIdx.x == 0)
+        {
+            if (temp_storage.extreme_flags.nan)
+            {
+                d_extreme_flags->nan = 1;
+            }
+
+        }
+    }
+
+    template<typename    InputIteratorT, int FULL_TILES>
+    __device__ __forceinline__ void SumToBins_internal(
+        InputIteratorT  d_in_begin,
+        InputIteratorT  d_in_end,
+        int             num_items,
+        ExtremeFlags   *d_extreme_flags,
+        Accumulator   (&bins)[Meta::NUM_BINS],    /*__shared__*/
+        int            &s_FIX_INFTY,              /*__shared__*/
+        Int2Type<FULL_TILES> oob_check
+        )
+    {
+        enum {
+            /* The default ITEMS_PER_THREAD is overridden with 1 for non-full tiles */
+            _ITEMS_PER_THREAD      = (FULL_TILES ? ITEMS_PER_THREAD : ITEMS_PER_THREAD_TAIL),
+            TILE_SIZE              = (BLOCK_THREADS * _ITEMS_PER_THREAD),
+            EXP_BIT_SORT_BEGIN     = (DOUBLE_MANTISSA_BITS + Meta::EXPONENT_BITS_PER_BIN),
+            EXP_BIT_SORT_END       = (DOUBLE_MANTISSA_BITS + DOUBLE_EXPONENT_BITS),
+        };
+
+        typedef typename If<FULL_TILES, BlockRadixSortFullTiles, BlockRadixSortTail>::Type BlockRadixSort;
+
+        double items[_ITEMS_PER_THREAD];
+
+        int tiles_per_block = num_items / (gridDim.x * TILE_SIZE) + (FULL_TILES ? 0 : 1);
+        InputIteratorT d_in = d_in_begin + blockIdx.x * TILE_SIZE;
+
+        /// PROCESS INPUT
 
         // Loop over tiles
         #pragma unroll 4
-        for (int tile_pos = 0; tile_pos < items_per_block; tile_pos += TILE_SIZE)
+        for (int tile = 0; tile < tiles_per_block; tile++)
         {
             // BINS ARE BEING UPDATED
             // ITEMS ARE NOT BEING USED
@@ -688,11 +802,18 @@ public:
             asm("// Load items {");
             // Load items in direct striped order
             #pragma unroll
-            for (int ITEM = 0; ITEM < ITEMS_PER_THREAD; ITEM++)
+            for (int ITEM = 0; ITEM < _ITEMS_PER_THREAD; ITEM++)
             {
-                items[ITEM] = d_in[ITEM * BLOCK_THREADS + threadIdx.x];
-//                if (items[ITEM] > 1.0+1e-6)
-//                    printf("!!! %f\n", items[ITEM]);
+                if (FULL_TILES ||
+                    IsValidOutOfBoundsAccess<InputIteratorT>::VALUE )   //< out-of-bounds array accesses are assumed to return 0.0
+                    items[ITEM] = d_in[ITEM * BLOCK_THREADS + threadIdx.x];
+                else
+                {
+                    items[ITEM] = 0.0;
+                    InputIteratorT in_ptr = d_in + (ITEM * BLOCK_THREADS + threadIdx.x);
+                    if (d_in_end - in_ptr > 0)
+                        items[ITEM] = *in_ptr;
+                }
             }
 
             asm("// Load items }");
@@ -700,30 +821,37 @@ public:
             // ITEMS ARE BEING USED
 
             // Reduce values and update bins
-            bool overwrite_bins = (tile_pos == 0);
             ///////////////////////////////////////////////
 
             /// RADIX SORT BY (SOME) EXPONENT BITS
             asm("// SORT {");
             __syncthreads();
             // SHARED MEM IN USE FOR SORT
-            UnsignedBits (*cvt_to_ubits)[ITEMS_PER_THREAD] = (UnsignedBits(*)[ITEMS_PER_THREAD])items;
-            BlockRadixSort(temp_storage.sort).Sort(*cvt_to_ubits,EXP_BIT_SORT_BEGIN,EXP_BIT_SORT_END);
+            UnsignedBits (*cvt_to_ubits)[_ITEMS_PER_THREAD] = (UnsignedBits(*)[_ITEMS_PER_THREAD])items;
+            BlockRadixSort((typename BlockRadixSort::TempStorage&)(temp_storage.sort))
+                .Sort(*cvt_to_ubits,EXP_BIT_SORT_BEGIN,EXP_BIT_SORT_END);
             asm("// SORT }");
 
             /// REDUCE-BY-KEY (SETUP)
             asm("// REDUCE-BY-KEY {");
-            BinIdT          bin_ids     [ITEMS_PER_THREAD];
-            FlagT           tail_flags  [ITEMS_PER_THREAD];
-            AccumBinPair    zip         [ITEMS_PER_THREAD];
-            AccumBinPair    zipout      [ITEMS_PER_THREAD];
+            BinIdT          bin_ids     [_ITEMS_PER_THREAD];
+            FlagT           tail_flags  [_ITEMS_PER_THREAD];
+            AccumBinPair    zip         [_ITEMS_PER_THREAD];
+            AccumBinPair    zipout      [_ITEMS_PER_THREAD];
             #pragma unroll
-            for (int i = 0; i < ITEMS_PER_THREAD; ++i)
+            for (int i = 0; i < _ITEMS_PER_THREAD; ++i)
             {
                 if (isnan(items[i]))
                 {
                     temp_storage.extreme_flags.nan = 1;
                 }
+
+                const double BIG_DBL = 1e306;
+                if (abs(items[i]) > BIG_DBL)
+                {
+                    s_FIX_INFTY = 1;
+                }
+
                 bin_ids[i] = bin_id(items[i]);
                 zip[i].accum = Accumulator(items[i], 0.0);
                 zip[i].bin = bin_ids[i];
@@ -736,24 +864,25 @@ public:
             // ITEMS ARE NOT BEING USED
 
             /// REDUCE BY KEY
-            BlockScan(temp_storage.scan).InclusiveScan(zip, zipout, ReductionOp());
+            if (s_FIX_INFTY)
+            {
+                BlockScan(temp_storage.scan).InclusiveScan(zip, zipout, ReductionOp<1>());
+            }
+            else
+                BlockScan(temp_storage.scan).InclusiveScan(zip, zipout, ReductionOp<0>());
             BlockDiscontinuity(temp_storage.flag).FlagTails(tail_flags, bin_ids, cub::Inequality());
 
             /// UPDATE BINS
             #pragma unroll
-            for (int i = 0; i < ITEMS_PER_THREAD; ++i)
+            for (int i = 0; i < _ITEMS_PER_THREAD; ++i)
             {
                 if (tail_flags[i])
                 {
                     // this is the reduction result for this bin
-                    if (overwrite_bins)
-                    {
-                        bins[bin_ids[i]] = zipout[i].accum;
-                    }
+                    if (1 /*s_FIX_INFTY */ )
+                        bins[bin_ids[i]].Add<1>(zipout[i].accum);
                     else
-                    {
-                        bins[bin_ids[i]].Add(zipout[i].accum);
-                    }
+                        bins[bin_ids[i]].Add<0>(zipout[i].accum);
                 }
             }
 
@@ -762,46 +891,11 @@ public:
         __syncthreads();
         // SHARED MEM NOT IN USE
         // BINS ARE NOT BEING UPDATED
-
-        /// STORE BINS TO GLOBAL MEM
-        {
-            typedef double StoreUnit;
-            StoreUnit* isptr = (StoreUnit*)bins;
-            StoreUnit* igptr = (StoreUnit*)d_accumulators;
-            const int COUNT = Meta::NUM_BINS * Meta::BIN_SIZE_BYTES / sizeof(StoreUnit);
-            #pragma unroll
-            for (int i = 0; i < COUNT / BLOCK_THREADS; i++)
-            {
-                double val = isptr[i * BLOCK_THREADS + threadIdx.x];
-                igptr[i * BLOCK_THREADS + threadIdx.x] = (isnan(val) ? 0.0 : val);  // TODO: test alternative fix for NaN: fmax(val,0.0) + fmin(val,0.0)
-//                if (!isnan(val))
-//                {
-//                    int bin_id = (i * BLOCK_THREADS + threadIdx.x) / EXPANSIONS;
-//                    atomicAddToBin_< EXPANSIONS + 1 >(((AccumulatorDouble<EXPANSIONS+1>*)d_global_bin_set)[bin_id], val);
-//                }
-            }
-            if (COUNT % BLOCK_THREADS > 0)
-            {
-                int i = COUNT / BLOCK_THREADS;
-                if (i * BLOCK_THREADS + threadIdx.x < COUNT)
-                {
-                    double val = isptr[i * BLOCK_THREADS + threadIdx.x];
-                    igptr[i * BLOCK_THREADS + threadIdx.x] = (isnan(val) ? 0.0 : val);
-                }
-            }
-        }
-
-        if (threadIdx.x == 0)
-        {
-            if (temp_storage.extreme_flags.nan)
-            {
-                d_extreme_flags->nan = 1;
-            }
-        }
     }
 
 //private:
 
+    template<int FIX_INFTY>
     struct ReductionOp
     {
         __device__ __forceinline__ AccumBinPair operator()(
@@ -811,7 +905,7 @@ public:
             AccumBinPair retval = second;
             if (first.bin == second.bin)
             {
-                retval.accum.Add(first.accum);
+                retval.accum.Add<FIX_INFTY>(first.accum);
             }
             return retval;
         }
@@ -835,6 +929,48 @@ public:
             }
         }
     }
+
+    static __device__ __forceinline__ void StoreBinsToGlobalMem(
+        void           *d_accumulators,
+        Accumulator   (&bins)[Meta::NUM_BINS])    /*__shared__*/
+    {
+        d_accumulators = (void*)((char*)d_accumulators + blockIdx.x * Meta::NUM_BINS * Meta::BIN_SIZE_BYTES);
+        typedef double StoreUnit;
+        StoreUnit* isptr = (StoreUnit*)bins;
+        StoreUnit* igptr = (StoreUnit*)d_accumulators;
+        const int COUNT = Meta::NUM_BINS * Meta::BIN_SIZE_BYTES / sizeof(StoreUnit);
+        #pragma unroll
+        for (int i = 0; i < COUNT / BLOCK_THREADS; i++)
+        {
+            double val = isptr[i * BLOCK_THREADS + threadIdx.x];
+            igptr[i * BLOCK_THREADS + threadIdx.x] = (isnan(val) ? 0.0 : val);  // TODO: test alternative fix for NaN: fmax(val,0.0) + fmin(val,0.0)
+            //                if (!isnan(val))
+            //                {
+            //                    int bin_id = (i * BLOCK_THREADS + threadIdx.x) / EXPANSIONS;
+            //                    atomicAddToBin_< EXPANSIONS + 1 >(((AccumulatorDouble<EXPANSIONS+1>*)d_global_bin_set)[bin_id], val);
+            //                }
+        }
+        if (COUNT % BLOCK_THREADS > 0)
+        {
+            int i = COUNT / BLOCK_THREADS;
+            if (i * BLOCK_THREADS + threadIdx.x < COUNT)
+            {
+                double val = isptr[i * BLOCK_THREADS + threadIdx.x];
+                igptr[i * BLOCK_THREADS + threadIdx.x] = (isnan(val) ? 0.0 : val);
+            }
+        }
+    }
+
+    template<typename Iterator> struct IsValidOutOfBoundsAccess
+    {
+        enum {VALUE = 0};
+    };
+
+    template <typename T, typename OffsetT>
+    struct IsValidOutOfBoundsAccess<TexObjInputIterator<T,OffsetT> >
+    {
+        enum {VALUE = 1};
+    };
 
     static __device__ __forceinline__ BinIdT bin_id(const double& v)
     {
@@ -1039,6 +1175,7 @@ struct DeviceAccurateSumSmemAtomic
  *   The bins in each set cover the entire double-precision exponent range.
  */
 template <
+typename    InputIteratorT,
 int         BLOCK_THREADS,
 int         ITEMS_PER_THREAD,
 int         EXPANSIONS,
@@ -1046,7 +1183,8 @@ int         RADIX_BITS,
 int         MIN_CONCURRENT_BLOCKS>
 __launch_bounds__ (BLOCK_THREADS, MIN_CONCURRENT_BLOCKS)
 __global__ void DeviceAccurateSumKernel(
-    double         *d_in,
+//    double         *d_in,
+    InputIteratorT  d_in,
     int             num_items,
     void           *d_accumulators,
     size_t          accumulators_bytes,
@@ -1120,17 +1258,15 @@ struct DeviceAccurateFPSum
         enum {
             Method                  = ACCUSUM_SORT_REDUCE,
             WarpsPerBlock           = 4,
-            BlocksPerSm             = 24,
-            ItemsPerThread          = 3,
+            ItemsPerThread          = 5,
             Expansions              = 2,
             RadixBits               = 3,
-            MinConcurrentBlocks     = 3,
+            MinConcurrentBlocks     = 9,
         };
     };
 
     template <
         int BLOCK_THREADS,
-        int MIN_GRID_SIZE,
         int ITEMS_PER_THREAD,
         int EXPANSIONS,
         int RADIX_BITS,
@@ -1146,6 +1282,7 @@ struct DeviceAccurateFPSum
         cudaStream_t    stream                  = 0)
     {
         typedef AccumulatorBinsMetadata<BLOCK_THREADS, ITEMS_PER_THREAD, EXPANSIONS, RADIX_BITS> BinMeta;
+        typedef cub::TexObjInputIterator<double> InputIteratorTexture;
 
         void *d_bin_sets = NULL;
         void *d_global_bin_set = NULL;
@@ -1156,11 +1293,14 @@ struct DeviceAccurateFPSum
         cudaError_t error = cudaSuccess;
 
         do {
-            int device_id, sm_count;
+            int device_id, sm_count, max_blocks_per_sm;
             if (error = CubDebug(cudaGetDevice(&device_id))) break;
             if (error = CubDebug(cudaDeviceGetAttribute(&sm_count, cudaDevAttrMultiProcessorCount, device_id))) break;
-            int grid_size = CUB_ROUND_UP_NEAREST(CUB_MAX(MIN_GRID_SIZE, CUB_QUOTIENT_CEILING(num_items, BinMeta::BIN_CAPACITY)), sm_count);
-
+            void (*AccusumKernel)(InputIteratorTexture,int,void*,size_t,void*,size_t,ExtremeFlags*) =
+                DeviceAccurateSumKernel<cub::TexObjInputIterator<double>, BLOCK_THREADS, ITEMS_PER_THREAD, EXPANSIONS, RADIX_BITS, MIN_CONCURRENT_BLOCKS>;
+            MaxSmOccupancy(
+                max_blocks_per_sm, AccusumKernel, BLOCK_THREADS);
+            int grid_size = CUB_MAX(sm_count * max_blocks_per_sm, CUB_ROUND_UP_NEAREST(CUB_QUOTIENT_CEILING(num_items, BinMeta::BIN_CAPACITY), sm_count));
             // Temporary storage allocation requirements
             void* allocations[2];
             size_t allocation_sizes[2] =
@@ -1178,10 +1318,10 @@ struct DeviceAccurateFPSum
             }
 
             d_bin_sets          = allocations[0];
-            d_global_bin_set          = NULL; //allocations[0];
+            d_global_bin_set    = NULL; //allocations[0];
             d_extreme_flags     = (ExtremeFlags*)allocations[1];
             h_bin_sets          = malloc(allocation_sizes[0]);
-            h_global_bin_set          = NULL; //malloc(allocation_sizes[0]);
+            h_global_bin_set    = NULL; //malloc(allocation_sizes[0]);
             h_extreme_flags     = (ExtremeFlags*)malloc(allocation_sizes[1]);
 
             if (h_bin_sets == NULL || h_extreme_flags == NULL)
@@ -1192,10 +1332,17 @@ struct DeviceAccurateFPSum
 
             if (error = CubDebug(cudaMemsetAsync(d_temp_storage, 0, temp_storage_bytes, stream))) break;
 
+            typedef cub::TexObjInputIterator<double> InputIteratorTexture;
+            InputIteratorTexture itr;
+            itr.BindTexture(d_in, sizeof(double) * num_items);
+
+            //warm-up
+            AccusumKernel<<<grid_size, BLOCK_THREADS, 0, stream>>>(
+            itr/*NULL*/,0,NULL,0,NULL,0,NULL);
+
             cudaProfilerStart();
-            DeviceAccurateSumKernel<BLOCK_THREADS, ITEMS_PER_THREAD, EXPANSIONS, RADIX_BITS, MIN_CONCURRENT_BLOCKS>
-            <<<grid_size, BLOCK_THREADS, 0, stream>>>(
-                d_in,
+            AccusumKernel<<<grid_size, BLOCK_THREADS, 0, stream>>>(
+                itr,//d_in,
                 num_items,
                 d_bin_sets,
                 0,//temp_reduce_size,
@@ -1213,6 +1360,9 @@ struct DeviceAccurateFPSum
             //        if (error = CubDebug(cudaMemcpy(h_global_bin_set, d_global_bin_set, allocation_sizes[0], cudaMemcpyDeviceToHost, stream))) break;
             if (error = CubDebug(cudaMemcpyAsync(h_extreme_flags, d_extreme_flags, allocation_sizes[1], cudaMemcpyDeviceToHost, stream))) break;
             if (error = CubDebug(cudaStreamSynchronize(stream))) break;
+
+            itr.UnbindTexture();
+
             double result;
             if (h_extreme_flags->nan)
             {
@@ -1224,6 +1374,8 @@ struct DeviceAccurateFPSum
                 for (int i = 0; i < allocation_sizes[0] / sizeof(double); i++)
                 {
                     total_sum.Add(((double*)h_bin_sets)[i]);
+//                    if (fabs(((double*)h_bin_sets)[i]) > 0.0 )
+//                        printf("%f\n", ((double*)h_bin_sets)[i]);
 //                    total_sum.print(); printf("\n");
                 }
                 total_sum.Normalize();
@@ -1241,6 +1393,29 @@ struct DeviceAccurateFPSum
         return error;
     }
 
+    template<int NUM_BINS>
+    struct BinidOperator
+    {
+        __host__ __device__ __forceinline__
+        BinidOperator() {}
+        __device__ __forceinline__
+        int operator()(const double& d) const { return binid(d); }
+
+        __device__ __forceinline__
+        int binid(double d) const
+        {
+            enum {
+                LOG_NUM_BINS = Log2<NUM_BINS>::VALUE,
+                SHIFT_RIGHT = 63 - LOG_NUM_BINS
+            };
+            long long ll = __double_as_longlong(d);
+            int bin = (int)(ll >> SHIFT_RIGHT) & (NUM_BINS-1);
+            return bin;
+        }
+
+        double* d_in;
+    };
+
     CUB_RUNTIME_FUNCTION __forceinline__
     static cudaError_t SumSmemAtomic
     (
@@ -1253,7 +1428,6 @@ struct DeviceAccurateFPSum
     {
         enum
         {
-            NUM_SM                  = 12,       //< number of SMs
             BLOCK_WAVE_SIZE         = 3,        //< number of blocks that run on an SM concurrently
             NUM_BLOCK_WAVES         = 8,        //< multiplication factor for number of blocks
             BLOCK_THREADS           = 672,
@@ -1297,11 +1471,30 @@ struct DeviceAccurateFPSum
 //                num_items = num_kernel_items;
 //            }
 
+            ////
+//            cub::TexObjInputIterator<unsigned char> d_samples_tex_itr;
+            //d_samples_tex_itr.BindTexture(d_samples, num_items * sizeof(unsigned char));
+            typedef BinidOperator<NUM_BINS> BinidOperator;
+            typedef TransformInputIterator<int, BinidOperator, double*> BinidIterator;
+            BinidIterator binid_iterator(d_in, BinidOperator() );
+
+//            // Determine temporary device storage requirements
+//            size_t histogram_bytes = NUM_BINS * sizeof(int);
+//            size_t temp_storage_bytes_histogram = 0;
+//            DeviceHistogram::HistogramEven<BinidIterator,int,int,int>
+//            (   NULL, temp_storage_bytes_histogram, binid_iterator, NULL,
+//                NUM_BINS+1, 0, NUM_BINS+1,
+//                num_items,stream);
+////
+
+
             // Temporary storage allocation requirements
-            void* allocations[1];
-            size_t allocation_sizes[1] =
+            void* allocations[3];
+            size_t allocation_sizes[3] =
             {
                 grid_size * NUM_BIN_COPIES_SMEM * (EXPANSIONS * NUM_BINS) * sizeof(double),  // bytes needed for bin sets
+//                histogram_bytes,
+//                temp_storage_bytes_histogram,
             };
 
             // Alias the temporary allocations from the single storage blob (or compute the necessary size of the blob)
@@ -1310,6 +1503,10 @@ struct DeviceAccurateFPSum
             // Return if the caller is simply requesting the size of the storage allocation
             if (d_temp_storage == NULL)
                 return cudaSuccess;
+
+//            int* d_histogram = (int*) allocations[1];
+//            void* d_temp_storage_histogram = allocations[2];
+//            int* h_histogram = (int*)malloc(histogram_bytes);
 
             h_bin_sets = malloc(temp_storage_bytes);
             d_bin_sets = d_temp_storage;
@@ -1320,6 +1517,20 @@ struct DeviceAccurateFPSum
             }
             if (error = CubDebug(cudaMemsetAsync(d_temp_storage, 0, temp_storage_bytes, stream))) break;
             if (error = CubDebug(cudaStreamSynchronize(stream))) break;
+
+//            DeviceHistogram::HistogramEven<BinidIterator,int,int,int>
+//            (   d_temp_storage_histogram, temp_storage_bytes_histogram, binid_iterator, d_histogram,
+//                NUM_BINS+1, 0, NUM_BINS+1,
+//                num_items,stream);
+//            if (error = CubDebug(cudaMemcpyAsync(h_histogram, d_histogram, histogram_bytes, cudaMemcpyDeviceToHost, stream))) break;
+//            if (error = CubDebug(cudaStreamSynchronize(stream))) break;
+
+//            printf("Histogram:\n");
+//            for(int i = 0; i < NUM_BINS; i++)
+//            {
+//                printf("%5d ", h_histogram[i]);
+//            }
+
 
             cudaProfilerStart();
             // Run kernel once to prime caches and check result
@@ -1395,16 +1606,12 @@ struct DeviceAccurateFPSum
     {
 
         enum {
-            WARP_SIZE       = 32,
-            NUM_SM          = 14,
-            BLOCK_THREADS   = WARP_SIZE * DefaultSetup::WarpsPerBlock,
-            GRID_SIZE       = DefaultSetup::BlocksPerSm * NUM_SM,
+            BLOCK_THREADS   = CUB_PTX_WARP_THREADS * DefaultSetup::WarpsPerBlock,
         };
         if (DefaultSetup::Method == (int)ACCUSUM_SORT_REDUCE)
         {
             return SumSortReduce<
                 BLOCK_THREADS,
-                GRID_SIZE,
                 DefaultSetup::ItemsPerThread,
                 DefaultSetup::Expansions,
                 DefaultSetup::RadixBits,
