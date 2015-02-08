@@ -177,6 +177,7 @@ public:
         res_desc.res.linear.desc        = channel_desc;
         res_desc.res.linear.sizeInBytes = bytes;
         tex_desc.readMode               = cudaReadModeElementType;
+        tex_desc.addressMode[0]         = cudaAddressModeBorder;
         return cudaCreateTextureObject(&tex_obj, &res_desc, &tex_desc, NULL);
     }
 
