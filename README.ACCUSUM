@@ -28,22 +28,37 @@ IMPLEMENTATION
 PROBLEMS, OPTIMIZATION, AND DEVELOPMENT DIRECTIONS
 
 // TESTING AND TUNING
-The templated function RunTests() can run a series of experiments trying different combinations of configuration parameters. The function received a structure of ranges in which each optimization parameter needs to be tested as a template parameter. For example:
-struct SetupDefault
-{
-    enum { Method = TestExponentSort::ACCUSUM_SORT_REDUCE};  /*ACCUSUM_SMEM_ATOMIC ACCUSUM_SORT_REDUCE*/
-    typedef Range<4,4>      WarpsPerBlock;       //< for BLOCK_SIZE multiple by 32
-    typedef Range<24,24>      BlocksPerSm;         //< for MIN_GRID_SIZE multiple by 14
-    typedef Range<3,3>      ItemsPerThread;
-    typedef Range<2,2>      Expansions;
-    typedef Range<3,3>      RadixBits;
-    typedef Range<3,3>      MinConcurrentBlocks;    //< to be used as a parameter to __launch_bounds__
-    typedef Range<5,5>      GenerationMode;
-};
-...
-RunTests<SetupDefault>(testobj, num_items, true, seed);
 
-Please note that with large template ranges the compilation time may be long because each combination is compiled separately.
+The algorithms has several compile-time configuration parameters that can be tuned for performance.
+Tools for tuning these parameters for a specific GPU are provided in test\test_device_accusum.cu.
+The default parameters for testing are stored in SetupDefault struct
+
+simple_test() - simple accurate summation test (uses built-in configuration parameters)
+simple_test_with_setup() - accurate summation test with specified configuration parameters taken from SetupDefault
+Tune<0>() - Tunes each parameter and reports which parameter and value provide the highest speedup over the current
+            default, or reports that it a faster setup was not found.
+            The function involves compilation of multiple template function instances. Comment out the call to 
+            avoid longer compilation time.
+
+RunTests() - runs a series of experiments trying different combinations of configuration parameters. 
+             The function receives a structure of compile-time integer ranges of tested parameter values.
+             For example:
+                struct SetupDefault
+                {
+                    enum { Method = TestExponentSort::ACCUSUM_SORT_REDUCE};  /*ACCUSUM_SMEM_ATOMIC ACCUSUM_SORT_REDUCE*/
+                    typedef Range<4,4>      WarpsPerBlock;       //< for BLOCK_SIZE multiple by 32
+                    typedef Range<24,24>      BlocksPerSm;         //< for MIN_GRID_SIZE multiple by 14
+                    typedef Range<3,3>      ItemsPerThread;
+                    typedef Range<2,2>      Expansions;
+                    typedef Range<3,3>      RadixBits;
+                    typedef Range<3,3>      MinConcurrentBlocks;    //< to be used as a parameter to __launch_bounds__
+                    typedef Range<5,5>      GenerationMode;
+                };
+                ...
+                RunTests<SetupDefault>(testobj, num_items, true, seed);
+            Please note that with large template ranges the compilation time may be long because each combination is compiled separately.
+
+TestCustom() - Custom testing
 
 // EXTEME VALUES: NAN, +INF, -INF
 - One problem with the TwoSum method and its extensions is dealing with sums that overflow the dynamic range representable by a floating-point word.
