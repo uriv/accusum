@@ -1278,6 +1278,7 @@ struct DeviceAccurateFPSum
         int             num_items,
         double          *d_out,
         void           *d_temp_storage,
+        void           *h_temp_storage,
         size_t          &temp_storage_bytes,
         cudaStream_t    stream                  = 0)
     {
@@ -1303,15 +1304,17 @@ struct DeviceAccurateFPSum
             int grid_size = CUB_MAX(sm_count * max_blocks_per_sm, CUB_ROUND_UP_NEAREST(CUB_QUOTIENT_CEILING(num_items, BinMeta::BIN_CAPACITY), sm_count));
             // Temporary storage allocation requirements
             void* allocations[2];
+            void* h_allocations[2];
             size_t allocation_sizes[2] =
             {
                 grid_size * BinMeta::NUM_BINS * BinMeta::BIN_SIZE_BYTES,      // for the per-block bin sets
                 //            sizeof(double) * (EXPANSIONS + 1) * BinMeta::NUM_BINS,     // for mega-bins
                 sizeof(ExtremeFlags)                                        // for nan,inf,inf flags
             };
-
             if (error = CubDebug(AliasTemporaries(d_temp_storage, temp_storage_bytes, allocations, allocation_sizes))) break;
-            if (d_temp_storage == NULL)
+            if (error = CubDebug(AliasTemporaries(h_temp_storage, temp_storage_bytes, h_allocations, allocation_sizes))) break;
+
+            if (d_temp_storage == NULL || h_temp_storage == NULL)
             {
                 // Return if the caller is simply requesting the size of the storage allocation
                 return cudaSuccess;
@@ -1320,9 +1323,9 @@ struct DeviceAccurateFPSum
             d_bin_sets          = allocations[0];
             d_global_bin_set    = NULL; //allocations[0];
             d_extreme_flags     = (ExtremeFlags*)allocations[1];
-            h_bin_sets          = malloc(allocation_sizes[0]);
-            h_global_bin_set    = NULL; //malloc(allocation_sizes[0]);
-            h_extreme_flags     = (ExtremeFlags*)malloc(allocation_sizes[1]);
+            h_bin_sets          = h_allocations[0];
+            h_global_bin_set    = NULL; //allocations[0];
+            h_extreme_flags     = (ExtremeFlags*)h_allocations[1];
 
             if (h_bin_sets == NULL || h_extreme_flags == NULL)
             {
@@ -1340,7 +1343,7 @@ struct DeviceAccurateFPSum
             AccusumKernel<<<grid_size, BLOCK_THREADS, 0, stream>>>(
             itr/*NULL*/,0,NULL,0,NULL,0,NULL);
 
-            cudaProfilerStart();
+            //cudaProfilerStart();
             AccusumKernel<<<grid_size, BLOCK_THREADS, 0, stream>>>(
                 itr,//d_in,
                 num_items,
@@ -1349,7 +1352,7 @@ struct DeviceAccurateFPSum
                 d_global_bin_set,
                 0,//temp_global_bin_set_size,
                 d_extreme_flags);
-            cudaProfilerStop();
+            //cudaProfilerStop();
 
 //            double* h_items = (double*)malloc(num_items * sizeof(double));
 //            CubDebugExit(cudaMemcpy(h_items, d_in, num_items * sizeof(double), cudaMemcpyDeviceToHost));
@@ -1386,9 +1389,9 @@ struct DeviceAccurateFPSum
             if (error = CubDebug(cudaStreamSynchronize(stream))) break;
         } while(0);
 
-        if(h_bin_sets != NULL)          free(h_bin_sets);
-        if(h_global_bin_set != NULL)    free(h_global_bin_set);
-        if(h_extreme_flags != NULL)     free(h_extreme_flags);
+//        if(h_bin_sets != NULL)          free(h_bin_sets);
+//        if(h_global_bin_set != NULL)    free(h_global_bin_set);
+//        if(h_extreme_flags != NULL)     free(h_extreme_flags);
 
         return error;
     }
@@ -1600,6 +1603,7 @@ struct DeviceAccurateFPSum
         int             num_items,
         double         *d_out,
         void           *d_temp_storage,
+        void           *h_temp_storage,
         size_t          &temp_storage_bytes,
         cudaStream_t    stream                  = 0
         )
@@ -1617,7 +1621,7 @@ struct DeviceAccurateFPSum
                 DefaultSetup::RadixBits,
                 DefaultSetup::MinConcurrentBlocks
             >
-            (d_in, num_items, d_out, d_temp_storage, temp_storage_bytes, stream);
+            (d_in, num_items, d_out, d_temp_storage, h_temp_storage, temp_storage_bytes, stream);
         }
         else    //ACCUSUM_SMEM_ATOMIC
         {

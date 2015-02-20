@@ -6,6 +6,7 @@
 #include <sstream>
 #include <limits>
 #include <algorithm>
+#include <unistd.h>
 #include <math.h>
 
 #include <device_functions.h>
@@ -74,26 +75,57 @@ const char *GenModeDblNames[] =
 
 extern "C" double sum_mpfr(double *data, int size) {
     mpfr_t tmp;
+    mpfr_t* mpfr_data;
+    mpfr_ptr* mpfr_ptrs;
     int i;
     double result;
-    mpfr_init2(tmp, 2098);
-    mpfr_set_d(tmp, 0.0, MPFR_RNDN);
+    const int DOUBLE_PREC = 53;
+    CpuTimer timer;
+    const bool use_mpfr_sum = true;     //< choose between mpfr_sum and a loop of mpfr_add
 
-    for (i = 0; i < size; i++)
+    if (use_mpfr_sum)
     {
-        mpfr_add_d(tmp, tmp, data[i], MPFR_RNDN);
-//        if (data[i] != 1.0 && data[i] != 0.0)
-//        {
-//            printf(">> (+%g) ", data[i]);
-//            mpfr_out_str(stdout, 16, 0, tmp, MPFR_RNDD);
-//            printf("\n");
-//        }
-    }
+        mpfr_init2(tmp, DOUBLE_PREC);
+        mpfr_set_d(tmp, 0.0, MPFR_RNDN);
+        mpfr_data = (mpfr_t*)malloc(size * sizeof(mpfr_t));
+        mpfr_ptrs = (mpfr_ptr*)malloc(size * sizeof(mpfr_ptr));
+        for (i = 0; i < size; i++)
+        {
+            mpfr_init2(mpfr_data[i], DOUBLE_PREC);
+            mpfr_set_d(mpfr_data[i], data[i], MPFR_RNDN);
+            mpfr_ptrs[i] = mpfr_data[i];
+        }
+        timer.Start();
+        mpfr_sum(tmp, mpfr_ptrs, size, MPFR_RNDN);
+        timer.Stop();
 
+        for (i = 0; i < size; i++)
+        {
+            mpfr_clear (mpfr_data[i]);
+        }
+        free(mpfr_data);
+        free(mpfr_ptrs);
+    }
+    else
+    {
+        mpfr_init2(tmp, 2048);
+        mpfr_set_d(tmp, 0.0, MPFR_RNDN);
+        timer.Start();
+        for (i = 0; i < size; i++)
+        {
+            mpfr_add_d(tmp, tmp, data[i], MPFR_RNDN);
+        }
+        timer.Stop();
+    }
     result = mpfr_get_d(tmp, MPFR_RNDN);
 //    printf("MPFR Sum is %g [%016llX]  ", result, reinterpret_bits<unsigned long long>(result));
 //    mpfr_out_str(stdout, 16, 0, tmp, MPFR_RNDD);
 //    printf("\n");
+
+//    float mpfr_sum_time = timer.ElapsedMillis();
+//    printf("MPFR %u items %7.3f ms   |   %f GDbl/sec\n", size, mpfr_sum_time, (float)size/mpfr_sum_time*1e-6);
+
+    mpfr_clear (tmp);
     return result;
 }
 
@@ -347,11 +379,18 @@ struct AccusumBenchmark
 
             // get size and allocate temporary storage
             void   *d_temp_storage = NULL;
+            void   *h_temp_storage = NULL;
             size_t temp_storage_bytes = 0;
             DeviceAccurateFPSum::SumSortReduce<BLOCK_THREADS, ITEMS_PER_THREAD, EXPANSIONS, RADIX_BITS, MIN_CONCURRENT_BLOCKS>
-                (d_in, num_items, d_out, d_temp_storage, temp_storage_bytes);
+                (d_in, num_items, d_out, d_temp_storage, h_temp_storage, temp_storage_bytes);
             cudaDeviceSynchronize();
             CubDebugExit(cudaMalloc((void**)&d_temp_storage, temp_storage_bytes ));
+            h_temp_storage = malloc(temp_storage_bytes);
+            if (h_temp_storage == NULL)
+            {
+                printf("Cannot allocate temporary buffer in host memory\n");
+                exit(-1);
+            }
 
             // compute reference sum
             if (validate)
@@ -359,16 +398,20 @@ struct AccusumBenchmark
                 *h_reference = sum_mpfr(h_in, num_items);
             }
 
+            cudaDeviceSynchronize();
+
             GpuTimer timer;
             timer.Start();
             DeviceAccurateFPSum::SumSortReduce<BLOCK_THREADS, ITEMS_PER_THREAD, EXPANSIONS, RADIX_BITS, MIN_CONCURRENT_BLOCKS>
-                (d_in, num_items, d_out, d_temp_storage, temp_storage_bytes);
+            (d_in, num_items, d_out, d_temp_storage, h_temp_storage, temp_storage_bytes);
             cudaDeviceSynchronize();
             timer.Stop();
             CubDebugExit(cudaMemcpy(h_out, d_out, sizeof(double), cudaMemcpyDeviceToHost));
             kernel_time = timer.ElapsedMillis();
-            thrpt_gdbl_sec = (float)num_items / kernel_time * 1e-6f;
+            thrpt_gdbl_sec = (float)num_items / kernel_time * 1e-6f * reps;
+//            printf("%u items %7.3f ms   |   %f GDbl/sec\n", num_items, kernel_time, thrpt_gdbl_sec);
             if (d_temp_storage) cudaFree(d_temp_storage);
+            if (h_temp_storage) free(h_temp_storage);
         }
         else if (METHOD == ACCUSUM_SMEM_ATOMIC)
         {
@@ -679,7 +722,7 @@ void TestCustom()
 //    RunTests<SetupMethod<SetupDefault, AccusumBenchmark::ACCUSUM_SMEM_ATOMIC> >(testobj, 1<<25, true, seed);
 
 //    RunTests<SetupGenMode>(testobj, num_items, validate, seed);
-//    RunTests<SetupDefault>(testobj, num_items, validate, seed);
+    RunTests<SetupDefault>(testobj, num_items, validate, seed);
 //    RunTests<SetupCustom>(testobj, num_items, validate, seed);
 //    RunTests<SetupCustom>(testobj, num_items, validate, seed);
 
@@ -703,7 +746,7 @@ void TestCustom()
 //    }
 
 //    RunTests<SetupWarpsPerBlock>(testobj, num_items, validate, seed);
-    RunTests<SetupItemsPerThread>(testobj, num_items, validate, seed);
+//    RunTests<SetupItemsPerThread>(testobj, num_items, validate, seed);
 //    RunTests<SetupExpansions>(testobj, num_items, validate, seed);
 //    RunTests<SetupRadixBits>(testobj, num_items, validate, seed);
 //    RunTests<SetupMinConcurrentBlocks>(testobj, num_items, validate, seed);
@@ -847,7 +890,8 @@ void simple_test_with_setup()
     double* h_items = NULL;
     double* d_items = NULL;
     double* d_result = NULL;
-    double* d_temp  = NULL;
+    void*   h_temp  = NULL;
+    void*   d_temp  = NULL;
     size_t d_temp_bytes = 0;
     double result = 0.;
     double reference = 0.;
@@ -869,25 +913,33 @@ void simple_test_with_setup()
     if (h_items == NULL)
     {
         printf("Cannot allocate host memory\n");
-        return;
+        exit(-1);
     }
     memset(h_items, 0, num_items * sizeof(double));
     std::fill(&h_items[0], &h_items[num_items], 1.0);   // initialize all items to 1.0
 
     // get required size of temporary space on device to d_temp_bytes
     DeviceAccurateFPSum::SumSortReduce<BLOCK_THREADS, ITEMS_PER_THREAD, EXPANSIONS, RADIX_BITS, MIN_CONCURRENT_BLOCKS>
-        (NULL, num_items, NULL, NULL, d_temp_bytes);
+        (NULL, num_items, NULL, NULL, NULL, d_temp_bytes);
 
     // allocate and initialize device memory
     CubDebugExit(cudaMalloc((void**)&d_items, num_items * sizeof(double)));
     CubDebugExit(cudaMalloc((void**)&d_result, sizeof(double) ));
     CubDebugExit(cudaMalloc((void**)&d_temp, d_temp_bytes ));
+    h_temp = malloc(d_temp_bytes);
+    if (h_temp == NULL)
+    {
+        printf("Cannot allocate temporary buffer in host memory\n");
+        exit(-1);
+    }
+
     CubDebugExit(cudaMemcpy(d_items, h_items, num_items * sizeof(double), cudaMemcpyHostToDevice));
     CubDebugExit(cudaMemset(d_result, 0, sizeof(double)));
     CubDebugExit(cudaMemset(d_temp, 0, d_temp_bytes));
+    memset(h_temp, 0, d_temp_bytes);
 
     DeviceAccurateFPSum::SumSortReduce<BLOCK_THREADS, ITEMS_PER_THREAD, EXPANSIONS, RADIX_BITS, MIN_CONCURRENT_BLOCKS>
-        (d_items, num_items, d_result, d_temp, d_temp_bytes);
+        (d_items, num_items, d_result, d_temp, h_temp, d_temp_bytes);
     cudaDeviceSynchronize();
     CubDebugExit(cudaMemcpy(&result, d_result, sizeof(double), cudaMemcpyDeviceToHost));
 
@@ -918,6 +970,7 @@ void simple_test_with_setup()
     CubDebugExit(cudaFree((void*)d_items));
     CubDebugExit(cudaFree((void*)d_result));
     CubDebugExit(cudaFree((void*)d_temp));
+    free(h_temp);
     printf("Simple test with setup finished\n");
 }
 
@@ -931,6 +984,7 @@ void simple_test()
     double* d_items = NULL;
     double* d_result = NULL;
     double* d_temp  = NULL;
+    void*   h_temp  = NULL;
     size_t d_temp_bytes = 0;
     double result = 0.;
     double reference = 0.;
@@ -949,18 +1003,26 @@ void simple_test()
     std::fill(&h_items[0], &h_items[num_items], 1.0);   // initialize all items to 1.0
 
     // get required size of temporary space on device to d_temp_bytes
-    DeviceAccurateFPSum::Sum(NULL, num_items, NULL, NULL, d_temp_bytes);
+    DeviceAccurateFPSum::Sum(NULL, num_items, NULL, NULL, NULL, d_temp_bytes);
     cudaDeviceSynchronize();
 
     // allocate and initialize device memory
     CubDebugExit(cudaMalloc((void**)&d_items, num_items * sizeof(double)));
     CubDebugExit(cudaMalloc((void**)&d_result, sizeof(double) ));
     CubDebugExit(cudaMalloc((void**)&d_temp, d_temp_bytes ));
+    h_temp = malloc(d_temp_bytes);
+    if (h_temp == NULL)
+    {
+        printf("Cannot allocate temporary buffer in host memory\n");
+        exit(-1);
+    }
+
     CubDebugExit(cudaMemcpy(d_items, h_items, num_items * sizeof(double), cudaMemcpyHostToDevice));
     CubDebugExit(cudaMemset(d_result, 0, sizeof(double)));
     CubDebugExit(cudaMemset(d_temp, 0, d_temp_bytes));
+    memset(h_temp, 0, d_temp_bytes);
 
-    DeviceAccurateFPSum::Sum(d_items, num_items, d_result, d_temp, d_temp_bytes);
+    DeviceAccurateFPSum::Sum(d_items, num_items, d_result, d_temp, h_temp, d_temp_bytes);
     cudaDeviceSynchronize();
     CubDebugExit(cudaMemcpy(&result, d_result, sizeof(double), cudaMemcpyDeviceToHost));
 
@@ -991,6 +1053,7 @@ void simple_test()
     CubDebugExit(cudaFree((void*)d_items));
     CubDebugExit(cudaFree((void*)d_result));
     CubDebugExit(cudaFree((void*)d_temp));
+    free(h_temp);
     printf("Simple test finished\n");
 }
 
