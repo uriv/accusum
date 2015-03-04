@@ -44,7 +44,7 @@
 MPFR_DIR = /home/$(USER)/mpfr-3.1.2/build
 
 # GMP library build directory
-GMP_DIR = /home/$(USER)/gmp-6.0.0
+GMP_DIR = /home/$(USER)/gmp-6.0.0/build
 
 #-------------------------------------------------------------------------------
 # Commandline Options

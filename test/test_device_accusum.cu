@@ -408,7 +408,7 @@ struct AccusumBenchmark
             timer.Stop();
             CubDebugExit(cudaMemcpy(h_out, d_out, sizeof(double), cudaMemcpyDeviceToHost));
             kernel_time = timer.ElapsedMillis();
-            thrpt_gdbl_sec = (float)num_items / kernel_time * 1e-6f * reps;
+            thrpt_gdbl_sec = (float)num_items / kernel_time * 1e-6f;
 //            printf("%u items %7.3f ms   |   %f GDbl/sec\n", num_items, kernel_time, thrpt_gdbl_sec);
             if (d_temp_storage) cudaFree(d_temp_storage);
             if (h_temp_storage) free(h_temp_storage);
@@ -626,7 +626,7 @@ struct SetupDefault
     typedef Range<5,5>      ItemsPerThread;
     typedef Range<2,2>      Expansions;
     typedef Range<3,3>      RadixBits;
-    typedef Range<9,9>      MinConcurrentBlocks;    //< to be used as a parameter to __launch_bounds__
+    typedef Range<5,5>      MinConcurrentBlocks;    //< to be used as a parameter to __launch_bounds__
     typedef Range<5,5>      GenerationMode;
 };
 
@@ -750,7 +750,7 @@ void TestCustom()
 //    RunTests<SetupExpansions>(testobj, num_items, validate, seed);
 //    RunTests<SetupRadixBits>(testobj, num_items, validate, seed);
 //    RunTests<SetupMinConcurrentBlocks>(testobj, num_items, validate, seed);
-//    RunTests<SetupGenMode>(testobj, num_items, validate, seed);
+    RunTests<SetupGenMode>(testobj, num_items, validate, seed);
 }
 
 template<int>
