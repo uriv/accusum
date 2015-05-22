@@ -1,6 +1,6 @@
 /******************************************************************************
  * Copyright (c) 2011, Duane Merrill.  All rights reserved.
- * Copyright (c) 2011-2014, NVIDIA CORPORATION.  All rights reserved.
+ * Copyright (c) 2011-2015, NVIDIA CORPORATION.  All rights reserved.
  *
  * Redistribution and use in source and binary forms, with or without
  * modification, are permitted provided that the following conditions are met:
@@ -99,7 +99,7 @@ cudaError_t Dispatch(
     size_t                      *d_temp_storage_bytes,
     cudaError_t                 *d_cdp_error,
 
-    void                        *d_temp_storage,
+    void*               d_temp_storage,
     size_t                      &temp_storage_bytes,
     InputIteratorT              d_in,
     UniqueOutputIteratorT       d_unique_out,
@@ -147,7 +147,7 @@ cudaError_t Dispatch(
     size_t                      *d_temp_storage_bytes,
     cudaError_t                 *d_cdp_error,
 
-    void                        *d_temp_storage,
+    void*               d_temp_storage,
     size_t                      &temp_storage_bytes,
     InputIteratorT              d_in,
     UniqueOutputIteratorT       d_unique_out,
@@ -199,7 +199,7 @@ cudaError_t Dispatch(
     size_t                      *d_temp_storage_bytes,
     cudaError_t                 *d_cdp_error,
 
-    void                        *d_temp_storage,
+    void*               d_temp_storage,
     size_t                      &temp_storage_bytes,
     InputIteratorT              d_in,
     UniqueOutputIteratorT       d_unique_out,
@@ -271,7 +271,7 @@ __global__ void CnpDispatchKernel(
     size_t                      *d_temp_storage_bytes,
     cudaError_t                 *d_cdp_error,
 
-    void                        *d_temp_storage,
+    void*               d_temp_storage,
     size_t                      temp_storage_bytes,
     InputIteratorT              d_in,
     UniqueOutputIteratorT       d_unique_out,
@@ -315,7 +315,7 @@ cudaError_t Dispatch(
     size_t                      *d_temp_storage_bytes,
     cudaError_t                 *d_cdp_error,
 
-    void                        *d_temp_storage,
+    void*               d_temp_storage,
     size_t                      &temp_storage_bytes,
     InputIteratorT              d_in,
     UniqueOutputIteratorT       d_unique_out,
@@ -480,10 +480,11 @@ void Test(
     int                 num_items)
 {
     // Allocate device output arrays and number of segments
-    T       *d_unique_out       = NULL;
-    LengthT  *d_offsets_out      = NULL;
-    OffsetT *d_lengths_out      = NULL;
-    int     *d_num_runs         = NULL;
+    T*          d_unique_out       = NULL;
+    LengthT*    d_offsets_out      = NULL;
+    OffsetT*    d_lengths_out      = NULL;
+    int*        d_num_runs         = NULL;
+
     if (RLE_METHOD == RLE)
         CubDebugExit(g_allocator.DeviceAllocate((void**)&d_unique_out, sizeof(T) * num_items));
     if (RLE_METHOD == NON_TRIVIAL)
@@ -492,13 +493,13 @@ void Test(
     CubDebugExit(g_allocator.DeviceAllocate((void**)&d_num_runs, sizeof(int)));
 
     // Allocate CDP device arrays
-    size_t          *d_temp_storage_bytes = NULL;
-    cudaError_t     *d_cdp_error = NULL;
+    size_t*          d_temp_storage_bytes = NULL;
+    cudaError_t*     d_cdp_error = NULL;
     CubDebugExit(g_allocator.DeviceAllocate((void**)&d_temp_storage_bytes,  sizeof(size_t) * 1));
     CubDebugExit(g_allocator.DeviceAllocate((void**)&d_cdp_error,           sizeof(cudaError_t) * 1));
 
     // Allocate temporary storage
-    void            *d_temp_storage = NULL;
+    void*           d_temp_storage = NULL;
     size_t          temp_storage_bytes = 0;
     CubDebugExit(Dispatch(Int2Type<RLE_METHOD>(), Int2Type<BACKEND>(), 1, d_temp_storage_bytes, d_cdp_error, d_temp_storage, temp_storage_bytes, d_in, d_unique_out, d_offsets_out, d_lengths_out, d_num_runs, equality_op, num_items, 0, true));
     CubDebugExit(g_allocator.DeviceAllocate(&d_temp_storage, temp_storage_bytes));
@@ -556,10 +557,10 @@ void Test(
     if (g_timing_iterations > 0)
     {
         float avg_millis = elapsed_millis / g_timing_iterations;
-        float grate = float(num_items) / avg_millis / 1000.0 / 1000.0;
+        float giga_rate = float(num_items) / avg_millis / 1000.0 / 1000.0;
         int bytes_moved = (num_items * sizeof(T)) + (num_runs * (sizeof(OffsetT) + sizeof(LengthT)));
-        float gbandwidth = float(bytes_moved) / avg_millis / 1000.0 / 1000.0;
-        printf(", %.3f avg ms, %.3f billion items/s, %.3f logical GB/s", avg_millis, grate, gbandwidth);
+        float giga_bandwidth = float(bytes_moved) / avg_millis / 1000.0 / 1000.0;
+        printf(", %.3f avg ms, %.3f billion items/s, %.3f logical GB/s", avg_millis, giga_rate, giga_bandwidth);
     }
     printf("\n\n");
 
@@ -594,9 +595,9 @@ void TestPointer(
     int             num_items,
     int             entropy_reduction,
     int             max_segment,
-    char*           key_type_string,
-    char*           offset_type_string,
-    char*           length_type_string)
+    const char*     key_type_string,
+    const char*     offset_type_string,
+    const char*     length_type_string)
 {
     // Allocate host arrays
     T*      h_in                    = new T[num_items];
@@ -651,9 +652,9 @@ template <
     typename        LengthT>
 void TestIterator(
     int             num_items,
-    char*           key_type_string,
-    char*           offset_type_string,
-    char*           length_type_string,
+    const char*     key_type_string,
+    const char*     offset_type_string,
+    const char*     length_type_string,
     Int2Type<true>  is_primitive)
 {
     // Allocate host arrays
@@ -694,9 +695,9 @@ template <
     typename        LengthT>
 void TestIterator(
     int             num_items,
-    char*           key_type_string,
-    char*           offset_type_string,
-    char*           length_type_string,
+    const char*     key_type_string,
+    const char*     offset_type_string,
+    const char*     length_type_string,
     Int2Type<false> is_primitive)
 {}
 
@@ -712,9 +713,9 @@ template <
     typename        LengthT>
 void Test(
     int             num_items,
-    char*           key_type_string,
-    char*           offset_type_string,
-    char*           length_type_string)
+    const char*     key_type_string,
+    const char*     offset_type_string,
+    const char*     length_type_string)
 {
     // Test iterator (one run)
     TestIterator<RLE_METHOD, BACKEND, T, OffsetT, LengthT>(num_items, key_type_string, offset_type_string, length_type_string, Int2Type<Traits<T>::PRIMITIVE>());
@@ -743,9 +744,9 @@ template <
     typename        LengthT>
 void TestDispatch(
     int             num_items,
-    char*           key_type_string,
-    char*           offset_type_string,
-    char*           length_type_string)
+    const char*     key_type_string,
+    const char*     offset_type_string,
+    const char*     length_type_string)
 {
     Test<RLE,           CUB, T, OffsetT, LengthT>(num_items, key_type_string, offset_type_string, length_type_string);
     Test<NON_TRIVIAL,   CUB, T, OffsetT, LengthT>(num_items, key_type_string, offset_type_string, length_type_string);
@@ -766,9 +767,9 @@ template <
     typename        LengthT>
 void TestSize(
     int             num_items,
-    char*           key_type_string,
-    char*           offset_type_string,
-    char*           length_type_string)
+    const char*     key_type_string,
+    const char*     offset_type_string,
+    const char*     length_type_string)
 {
     if (num_items < 0)
     {
@@ -807,7 +808,7 @@ int main(int argc, char** argv)
 {
     int num_items           = -1;
     int entropy_reduction   = 0;
-    int maxseg              = 1000;
+    int max_segment              = 1000;
 
     // Initialize command line
     CommandLineArgs args(argc, argv);
@@ -815,7 +816,7 @@ int main(int argc, char** argv)
     args.GetCmdLineArgument("n", num_items);
     args.GetCmdLineArgument("i", g_timing_iterations);
     args.GetCmdLineArgument("repeat", g_repeat);
-    args.GetCmdLineArgument("maxseg", maxseg);
+    args.GetCmdLineArgument("maxseg", max_segment);
     args.GetCmdLineArgument("entropy", entropy_reduction);
 
     // Print usage
@@ -847,8 +848,10 @@ int main(int argc, char** argv)
     // Compile/run basic CUB test
     if (num_items < 0) num_items = 32000000;
 
-    TestPointer<RLE,         CUB, int, int, int>(num_items, entropy_reduction, maxseg, CUB_TYPE_STRING(int), CUB_TYPE_STRING(int), CUB_TYPE_STRING(int));
-    TestPointer<NON_TRIVIAL, CUB, int, int, int>(num_items, entropy_reduction, maxseg, CUB_TYPE_STRING(int), CUB_TYPE_STRING(int), CUB_TYPE_STRING(int));
+//    TestPointer<RLE,         CUB, int, int, int>(num_items, entropy_reduction, max_segment, CUB_TYPE_STRING(int), CUB_TYPE_STRING(int), CUB_TYPE_STRING(int));
+//    TestPointer<NON_TRIVIAL, CUB, int, int, int>(num_items, entropy_reduction, max_segment, CUB_TYPE_STRING(int), CUB_TYPE_STRING(int), CUB_TYPE_STRING(int));
+    TestIterator<RLE, CUB, float, int, int>(num_items, CUB_TYPE_STRING(float), CUB_TYPE_STRING(int), CUB_TYPE_STRING(int), Int2Type<true>());
+
 
 #elif defined(QUICK_TEST)
 

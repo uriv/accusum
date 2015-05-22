@@ -1,6 +1,6 @@
 /******************************************************************************
  * Copyright (c) 2011, Duane Merrill.  All rights reserved.
- * Copyright (c) 2011-2014, NVIDIA CORPORATION.  All rights reserved.
+ * Copyright (c) 2011-2015, NVIDIA CORPORATION.  All rights reserved.
  * 
  * Redistribution and use in source and binary forms, with or without
  * modification, are permitted provided that the following conditions are met:
@@ -72,14 +72,14 @@
 /**
  * Utility for parsing command line arguments
  */
-class CommandLineArgs
+struct CommandLineArgs
 {
-protected:
 
-    std::vector<std::string> keys;
-    std::vector<std::string> values;
-
-public:
+    std::vector<std::string>    keys;
+    std::vector<std::string>    values;
+    std::vector<std::string>    args;
+    cudaDeviceProp              deviceProp;
+    float                       device_giga_bandwidth;
 
     /**
      * Constructor
@@ -100,12 +100,13 @@ public:
 
             if ((arg[0] != '-') || (arg[1] != '-'))
             {
+                args.push_back(arg);
                 continue;
             }
 
             string::size_type pos;
             string key, val;
-            if ((pos = arg.find( '=')) == string::npos) {
+            if ((pos = arg.find('=')) == string::npos) {
                 key = string(arg, 2, arg.length() - 2);
                 val = "";
             } else {
@@ -134,6 +135,29 @@ public:
         return false;
     }
 
+
+    /**
+     * Returns number of naked (non-flag and non-key-value) commandline parameters
+     */
+    template <typename T>
+    int NumNakedArgs()
+    {
+        return args.size();
+    }
+
+
+    /**
+     * Returns the commandline parameter for a given index (not including flags)
+     */
+    template <typename T>
+    void GetCmdLineArgument(int index, T &val)
+    {
+        using namespace std;
+        if (index < args.size()) {
+            istringstream str_stream(args[index]);
+            str_stream >> val;
+        }
+    }
 
     /**
      * Returns the value specified for a given commandline parameter --<flag>=<value>
@@ -246,7 +270,6 @@ public:
             error = CubDebug(cub::PtxVersion(ptx_version));
             if (error) break;
 
-            cudaDeviceProp deviceProp;
             error = CubDebug(cudaGetDeviceProperties(&deviceProp, dev));
             if (error) break;
 
@@ -254,8 +277,15 @@ public:
                 fprintf(stderr, "Device does not support CUDA.\n");
                 exit(1);
             }
-            if (!CheckCmdLineFlag("quiet")) {
-                printf("Using device %d: %s (PTX version %d, SM%d, %d SMs, %lld free / %lld total MB physmem, ECC %s)\n",
+
+            device_giga_bandwidth = float(deviceProp.memoryBusWidth) * deviceProp.memoryClockRate * 2 / 8 / 1000 / 1000;
+
+            if (!CheckCmdLineFlag("quiet"))
+            {
+                printf(
+                        "Using device %d: %s (PTX version %d, SM%d, %d SMs, "
+                        "%lld free / %lld total MB physmem, "
+                        "%.3f GB/s @ %d kHz mem clock, ECC %s)\n",
                     dev,
                     deviceProp.name,
                     ptx_version,
@@ -263,6 +293,8 @@ public:
                     deviceProp.multiProcessorCount,
                     (unsigned long long) free_physmem / 1024 / 1024,
                     (unsigned long long) total_physmem / 1024 / 1024,
+                    device_giga_bandwidth,
+                    deviceProp.memoryClockRate,
                     (deviceProp.ECCEnabled) ? "on" : "off");
                 fflush(stdout);
             }
@@ -273,10 +305,81 @@ public:
     }
 };
 
-
 /******************************************************************************
  * Random bits generator
  ******************************************************************************/
+
+int g_num_rand_samples = 0;
+
+
+template <typename T>
+bool IsNaN(T val) { return false; }
+
+template<>
+__noinline__ bool IsNaN<float>(float val)
+{
+    volatile unsigned int bits = reinterpret_cast<unsigned int &>(val);
+
+    return (((bits >= 0x7F800001) && (bits <= 0x7FFFFFFF)) || 
+        ((bits >= 0xFF800001) && (bits <= 0xFFFFFFFF)));
+}
+
+template<>
+__noinline__ bool IsNaN<float1>(float1 val)
+{
+    return (IsNaN(val.x));
+}
+
+template<>
+__noinline__ bool IsNaN<float2>(float2 val)
+{
+    return (IsNaN(val.y) || IsNaN(val.x));
+}
+
+template<>
+__noinline__ bool IsNaN<float3>(float3 val)
+{
+    return (IsNaN(val.z) || IsNaN(val.y) || IsNaN(val.x));
+}
+
+template<>
+__noinline__ bool IsNaN<float4>(float4 val)
+{
+    return (IsNaN(val.y) || IsNaN(val.x) || IsNaN(val.w) || IsNaN(val.z));
+}
+
+template<>
+__noinline__ bool IsNaN<double>(double val)
+{
+    volatile unsigned long long bits = *reinterpret_cast<unsigned long long *>(&val);
+
+    return (((bits >= 0x7FF0000000000001) && (bits <= 0x7FFFFFFFFFFFFFFF)) || 
+        ((bits >= 0xFFF0000000000001) && (bits <= 0xFFFFFFFFFFFFFFFF)));
+}
+
+template<>
+__noinline__ bool IsNaN<double1>(double1 val)
+{
+    return (IsNaN(val.x));
+}
+
+template<>
+__noinline__ bool IsNaN<double2>(double2 val)
+{
+    return (IsNaN(val.y) || IsNaN(val.x));
+}
+
+template<>
+__noinline__ bool IsNaN<double3>(double3 val)
+{
+    return (IsNaN(val.z) || IsNaN(val.y) || IsNaN(val.x));
+}
+
+template<>
+__noinline__ bool IsNaN<double4>(double4 val)
+{
+    return (IsNaN(val.y) || IsNaN(val.x) || IsNaN(val.w) || IsNaN(val.z));
+}
 
 /**
  * Generates random keys.
@@ -293,10 +396,10 @@ public:
  * -----------------------------------------------------
  * -1                   | 0
  * 0                    | 32
- * 1                    | 25.95
- * 2                    | 17.41
- * 3                    | 10.78
- * 4                    | 6.42
+ * 1                    | 25.95 (81%)
+ * 2                    | 17.41 (54%)
+ * 3                    | 10.78 (34%)
+ * 4                    | 6.42 (20%)
  * ...                  | ...
  *
  */
@@ -322,7 +425,8 @@ void RandomBits(
     if (end_bit < 0)
         end_bit = sizeof(K) * 8;
 
-    do {
+    while (true) 
+    {
         // Generate random word_buff
         for (int j = 0; j < NUM_WORDS; j++)
         {
@@ -336,6 +440,7 @@ void RandomBits(
             {
                 // Grab some of the higher bits from rand (better entropy, supposedly)
                 word &= mersenne::genrand_int32();
+                g_num_rand_samples++;                
             }
 
             word_buff[j] = word;
@@ -343,7 +448,10 @@ void RandomBits(
 
         memcpy(&key, word_buff, sizeof(K));
 
-    } while (key != key);        // avoids NaNs when generating random floating point numbers
+        K copy = key;
+        if (!IsNaN(copy))
+            break;          // avoids NaNs when generating random floating point numbers
+    }
 }
 
 
@@ -362,7 +470,6 @@ int CoutCast(char val) { return val; }
 int CoutCast(unsigned char val) { return val; }
 
 int CoutCast(signed char val) { return val; }
-
 
 
 
@@ -412,16 +519,19 @@ __host__ __device__ __forceinline__ void InitValue(GenMode gen_mode, cub::NullTy
 
 
 /**
- * cub::ItemOffsetPair<Value, OffsetT>test initialization
+ * cub::KeyValuePair<OffsetT, ValueT>test initialization
  */
-template <typename Value, typename OffsetT>
-__host__ __device__ __forceinline__ void InitValue(GenMode gen_mode, cub::ItemOffsetPair<Value, OffsetT>&value, int index = 0)
+template <typename KeyT, typename ValueT>
+__host__ __device__ __forceinline__ void InitValue(
+    GenMode                             gen_mode,
+    cub::KeyValuePair<KeyT, ValueT>&    value,
+    int                                 index = 0)
 {
     InitValue(gen_mode, value.value, index);
 
     // Assign corresponding flag with a likelihood of the last bit being set with entropy-reduction level 3
-    RandomBits(value.offset, 3);
-    value.offset = (value.offset & 0x1);
+    RandomBits(value.key, 3);
+    value.key = (value.key & 0x1);
 }
 
 
@@ -429,17 +539,6 @@ __host__ __device__ __forceinline__ void InitValue(GenMode gen_mode, cub::ItemOf
 /******************************************************************************
  * Comparison and ostream operators
  ******************************************************************************/
-
-
-/**
- * ItemOffsetPair ostream operator
- */
-template <typename T, typename OffsetT>
-std::ostream& operator<<(std::ostream& os, const cub::ItemOffsetPair<T, OffsetT>&val)
-{
-    os << '(' << val.value<< ',' << val.offset << ')';
-    return os;
-}
 
 /**
  * KeyValuePair ostream operator

@@ -263,7 +263,7 @@ struct AccusumBenchmark
     static const int MAX_BLOCK_THREADS = 256;
     static const int MAX_ITEMS_PER_THREAD = 8;
     static const int MAX_EXPANSIONS = 8;
-    static const int MAX_ITEMS = (1 << 26);
+    static const int MAX_ITEMS = (1 << 28);
     static const int MAX_GRID_SIZE_LOWBOUND = 1024;
 
     double *h_in       ;
@@ -722,35 +722,35 @@ void TestCustom()
 //    RunTests<SetupMethod<SetupDefault, AccusumBenchmark::ACCUSUM_SMEM_ATOMIC> >(testobj, 1<<25, true, seed);
 
 //    RunTests<SetupGenMode>(testobj, num_items, validate, seed);
-    RunTests<SetupDefault>(testobj, num_items, validate, seed);
+//    RunTests<SetupDefault>(testobj, num_items, validate, seed);
 //    RunTests<SetupCustom>(testobj, num_items, validate, seed);
 //    RunTests<SetupCustom>(testobj, num_items, validate, seed);
 
-//    int num_items_options[] = {
-//        1<<16,1<<17, 1<<18, 1<<19,
-//        1<<20, 1<<21, 1<<22, 1<<23,
-//        1<<24, 1<<25, 1<<26, 1<<27,
-//        1<<28,
+    int num_items_options[] = {
+        1<<16,1<<17, 1<<18, 1<<19,
+        1<<20, 1<<21, 1<<22, 1<<23,
+        1<<24, 1<<25, 1<<26, 1<<27,
+        1<<28,
 //        1<<29
-//    };
-//    for (int i = 0; i < sizeof(num_items_options) / sizeof(int); i++)
-//    {
-//        num_items = num_items_options[i];
-//        RunTests<SetupDefault>(testobj, num_items, true, seed);
-////        RunTests<SetupWarpsPerBlock>(testobj, num_items, validate, seed);
-////        RunTests<SetupItemsPerThread>(testobj, num_items, validate, seed);
-////        RunTests<SetupExpansions>(testobj, num_items, validate, seed);
-////        RunTests<SetupRadixBits>(testobj, num_items, validate, seed);
-////        RunTests<SetupMinConcurrentBlocks>(testobj, num_items, validate, seed);
-////        RunTests<SetupGenMode>(testobj, num_items, validate, seed);
-//    }
+    };
+    for (int i = 0; i < sizeof(num_items_options) / sizeof(int); i++)
+    {
+        num_items = num_items_options[i];
+        RunTests<SetupDefault>(testobj, num_items, true, seed);
+//        RunTests<SetupWarpsPerBlock>(testobj, num_items, validate, seed);
+//        RunTests<SetupItemsPerThread>(testobj, num_items, validate, seed);
+//        RunTests<SetupExpansions>(testobj, num_items, validate, seed);
+//        RunTests<SetupRadixBits>(testobj, num_items, validate, seed);
+//        RunTests<SetupMinConcurrentBlocks>(testobj, num_items, validate, seed);
+//        RunTests<SetupGenMode>(testobj, num_items, validate, seed);
+    }
 
 //    RunTests<SetupWarpsPerBlock>(testobj, num_items, validate, seed);
 //    RunTests<SetupItemsPerThread>(testobj, num_items, validate, seed);
 //    RunTests<SetupExpansions>(testobj, num_items, validate, seed);
 //    RunTests<SetupRadixBits>(testobj, num_items, validate, seed);
 //    RunTests<SetupMinConcurrentBlocks>(testobj, num_items, validate, seed);
-    RunTests<SetupGenMode>(testobj, num_items, validate, seed);
+//    RunTests<SetupGenMode>(testobj, num_items, validate, seed);
 }
 
 template<int>

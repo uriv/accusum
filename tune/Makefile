@@ -1,6 +1,6 @@
 #/******************************************************************************
 # * Copyright (c) 2011, Duane Merrill.  All rights reserved.
-# * Copyright (c) 2011-2014, NVIDIA CORPORATION.  All rights reserved.
+# * Copyright (c) 2011-2015, NVIDIA CORPORATION.  All rights reserved.
 # * 
 # * Redistribution and use in source and binary forms, with or without
 # * modification, are permitted provided that the following conditions are met:
@@ -108,8 +108,7 @@ ifeq (WIN_NT, $(findstring WIN_NT, $(OSUPPER)))
 endif
 
 # 32/64-bit (32-bit device pointers by default) 
-ifneq ($(force64), 1)
-	# 
+ifeq ($(force32), 1)
 	CPU_ARCH = -m32
 	CPU_ARCH_SUFFIX = i386
 else

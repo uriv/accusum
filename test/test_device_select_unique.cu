@@ -1,6 +1,6 @@
 /******************************************************************************
  * Copyright (c) 2011, Duane Merrill.  All rights reserved.
- * Copyright (c) 2011-2014, NVIDIA CORPORATION.  All rights reserved.
+ * Copyright (c) 2011-2015, NVIDIA CORPORATION.  All rights reserved.
  *
  * Redistribution and use in source and binary forms, with or without
  * modification, are permitted provided that the following conditions are met:
@@ -51,9 +51,10 @@ using namespace cub;
 // Globals, constants and typedefs
 //---------------------------------------------------------------------
 
-bool                    g_verbose           = false;
-int                     g_timing_iterations = 0;
-int                     g_repeat            = 0;
+bool                    g_verbose               = false;
+int                     g_timing_iterations     = 0;
+int                     g_repeat                = 0;
+float                   g_device_giga_bandwidth;
 CachingDeviceAllocator  g_allocator(true);
 
 // Dispatch types
@@ -81,7 +82,7 @@ cudaError_t Dispatch(
     size_t                      *d_temp_storage_bytes,
     cudaError_t                 *d_cdp_error,
 
-    void                        *d_temp_storage,
+    void*               d_temp_storage,
     size_t                      &temp_storage_bytes,
     InputIteratorT              d_in,
     OutputIteratorT              d_out,
@@ -115,7 +116,7 @@ cudaError_t Dispatch(
     size_t                      *d_temp_storage_bytes,
     cudaError_t                 *d_cdp_error,
 
-    void                        *d_temp_storage,
+    void*               d_temp_storage,
     size_t                      &temp_storage_bytes,
     InputIteratorT              d_in,
     OutputIteratorT              d_out,
@@ -163,7 +164,7 @@ __global__ void CnpDispatchKernel(
     size_t                      *d_temp_storage_bytes,
     cudaError_t                 *d_cdp_error,
 
-    void                        *d_temp_storage,
+    void*               d_temp_storage,
     size_t                      temp_storage_bytes,
     InputIteratorT              d_in,
     OutputIteratorT              d_out,
@@ -192,7 +193,7 @@ cudaError_t Dispatch(
     size_t                      *d_temp_storage_bytes,
     cudaError_t                 *d_cdp_error,
 
-    void                        *d_temp_storage,
+    void*               d_temp_storage,
     size_t                      &temp_storage_bytes,
     InputIteratorT              d_in,
     OutputIteratorT              d_out,
@@ -318,7 +319,7 @@ void Test(
     T                   *h_reference,
     int                 num_selected,
     int                 num_items,
-    char*               type_string)
+    const char*         type_string)
 {
     // Allocate device output array and num selected
     T       *d_out            = NULL;
@@ -366,10 +367,10 @@ void Test(
     // Display performance
     if (g_timing_iterations > 0)
     {
-        float avg_millis = elapsed_millis / g_timing_iterations;
-        float grate = float(num_items) / avg_millis / 1000.0 / 1000.0;
-        float gbandwidth = float((num_items + num_selected) * sizeof(T)) / avg_millis / 1000.0 / 1000.0;
-        printf(", %.3f avg ms, %.3f billion items/s, %.3f logical GB/s", avg_millis, grate, gbandwidth);
+        float avg_millis        = elapsed_millis / g_timing_iterations;
+        float giga_rate         = float(num_items) / avg_millis / 1000.0 / 1000.0;
+        float giga_bandwidth    = float((num_items + num_selected) * sizeof(T)) / avg_millis / 1000.0 / 1000.0;
+        printf(", %.3f avg ms, %.3f billion items/s, %.3f logical GB/s, %.1f%% peak", avg_millis, giga_rate, giga_bandwidth, giga_bandwidth / g_device_giga_bandwidth * 100.0);
     }
     printf("\n\n");
 
@@ -399,7 +400,7 @@ void TestPointer(
     int             num_items,
     int             entropy_reduction,
     int             max_segment,
-    char*           type_string)
+    const char*     type_string)
 {
     // Allocate host arrays
     T*  h_in        = new T[num_items];
@@ -442,8 +443,7 @@ template <
     typename        T>
 void TestIterator(
     int             num_items,
-    char*           type_string,
-    Int2Type<true>  is_number)
+    const char*     type_string)
 {
     // Use a counting iterator as the input
     CountingInputIterator<T, int> h_in(0);
@@ -470,19 +470,6 @@ void TestIterator(
 
 
 /**
- * Test DeviceSelect on iterator type
- */
-template <
-    Backend         BACKEND,
-    typename        T>
-void TestIterator(
-    int             num_items,
-    char*           type_string,
-    Int2Type<false> is_number)
-{}
-
-
-/**
  * Test different gen modes
  */
 template <
@@ -490,7 +477,7 @@ template <
     typename        T>
 void Test(
     int             num_items,
-    char*           type_string)
+    const char*     type_string)
 {
     for (int max_segment = 1; max_segment < CUB_MIN(num_items, (unsigned int) -1); max_segment *= 11)
     {
@@ -498,9 +485,6 @@ void Test(
         TestPointer<BACKEND, T>(num_items, 2, max_segment, type_string);
         TestPointer<BACKEND, T>(num_items, 7, max_segment, type_string);
     }
-
-    TestIterator<BACKEND, T>(num_items, type_string, Int2Type<Traits<T>::CATEGORY != NOT_A_NUMBER>());
-
 }
 
 
@@ -511,7 +495,7 @@ template <
     typename        T>
 void TestOp(
     int             num_items,
-    char*           type_string)
+    const char*     type_string)
 {
     Test<CUB, T>(num_items, type_string);
 #ifdef CUB_CDP
@@ -526,7 +510,7 @@ void TestOp(
 template <typename T>
 void Test(
     int             num_items,
-    char*           type_string)
+    const char*     type_string)
 {
     if (num_items < 0)
     {
@@ -583,15 +567,8 @@ int main(int argc, char** argv)
 
     // Initialize device
     CubDebugExit(args.DeviceInit());
+    g_device_giga_bandwidth = args.device_giga_bandwidth;
     printf("\n");
-
-    // Get device ordinal
-    int device_ordinal;
-    CubDebugExit(cudaGetDevice(&device_ordinal));
-
-    // Get device SM version
-    int sm_version;
-    CubDebugExit(SmVersion(sm_version, device_ordinal));
 
 #ifdef QUICKER_TEST
 
@@ -601,10 +578,21 @@ int main(int argc, char** argv)
 
 #elif defined(QUICK_TEST)
 
+    // Get device ordinal
+    int device_ordinal;
+    CubDebugExit(cudaGetDevice(&device_ordinal));
+
+    // Get device SM version
+    int sm_version;
+    CubDebugExit(SmVersion(sm_version, device_ordinal));
 
     // Compile/run quick tests
     if (num_items < 0) num_items = 32000000;
 
+    printf("-- Iterator ----------------------------\n");
+    TestIterator<CUB, int>(        num_items,                                 entropy_reduction, maxseg, CUB_TYPE_STRING(int));
+
+    printf("----------------------------\n");
     TestPointer<CUB, char>(        num_items * ((sm_version <= 130) ? 1 : 4), entropy_reduction, maxseg, CUB_TYPE_STRING(char));
     TestPointer<THRUST, char>(     num_items * ((sm_version <= 130) ? 1 : 4), entropy_reduction, maxseg, CUB_TYPE_STRING(char));
 

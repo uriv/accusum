@@ -1,6 +1,6 @@
 /******************************************************************************
  * Copyright (c) 2011, Duane Merrill.  All rights reserved.
- * Copyright (c) 2011-2014, NVIDIA CORPORATION.  All rights reserved.
+ * Copyright (c) 2011-2015, NVIDIA CORPORATION.  All rights reserved.
  *
  * Redistribution and use in source and binary forms, with or without
  * modification, are permitted provided that the following conditions are met:
@@ -28,7 +28,7 @@
 
 /**
  * \file
- * BlockRadixSortDownsweep implements a stateful abstraction of CUDA thread blocks for participating in device-wide radix sort downsweep across a range of tiles.
+ * AgentRadixSortDownsweep implements a stateful abstraction of CUDA thread blocks for participating in device-wide radix sort downsweep .
  */
 
 
@@ -65,26 +65,24 @@ enum RadixSortScatterAlgorithm
 
 
 /**
- * Parameterizable tuning policy type for BlockRadixSortDownsweep
+ * Parameterizable tuning policy type for AgentRadixSortDownsweep
  */
 template <
     int                         _BLOCK_THREADS,             ///< Threads per thread block
     int                         _ITEMS_PER_THREAD,          ///< Items per thread (per tile of input)
     BlockLoadAlgorithm          _LOAD_ALGORITHM,            ///< The BlockLoad algorithm to use
     CacheLoadModifier           _LOAD_MODIFIER,             ///< Cache load modifier for reading keys (and values)
-    bool                        _EXCHANGE_TIME_SLICING,     ///< Whether or not to time-slice key/value exchanges through shared memory to lower shared memory pressure
     bool                        _MEMOIZE_OUTER_SCAN,        ///< Whether or not to buffer outer raking scan partials to incur fewer shared memory reads at the expense of higher register pressure.  See BlockScanAlgorithm::BLOCK_SCAN_RAKING_MEMOIZE for more details.
     BlockScanAlgorithm          _INNER_SCAN_ALGORITHM,      ///< The BlockScan algorithm algorithm to use
     RadixSortScatterAlgorithm   _SCATTER_ALGORITHM,         ///< The scattering strategy to use
     cudaSharedMemConfig         _SMEM_CONFIG,               ///< Shared memory bank mode
     int                         _RADIX_BITS>                ///< The number of radix bits, i.e., log2(bins)
-struct BlockRadixSortDownsweepPolicy
+struct AgentRadixSortDownsweepPolicy
 {
     enum
     {
         BLOCK_THREADS           = _BLOCK_THREADS,           ///< Threads per thread block
         ITEMS_PER_THREAD        = _ITEMS_PER_THREAD,        ///< Items per thread (per tile of input)
-        EXCHANGE_TIME_SLICING   = _EXCHANGE_TIME_SLICING,   ///< Whether or not to time-slice key/value exchanges through shared memory to lower shared memory pressure
         RADIX_BITS              = _RADIX_BITS,              ///< The number of radix bits, i.e., log2(bins)
         MEMOIZE_OUTER_SCAN      = _MEMOIZE_OUTER_SCAN,      ///< Whether or not to buffer outer raking scan partials to incur fewer shared memory reads at the expense of higher register pressure.  See BlockScanAlgorithm::BLOCK_SCAN_RAKING_MEMOIZE for more details.
     };
@@ -102,15 +100,15 @@ struct BlockRadixSortDownsweepPolicy
  ******************************************************************************/
 
 /**
- * \brief BlockRadixSortDownsweep implements a stateful abstraction of CUDA thread blocks for participating in device-wide radix sort downsweep across a range of tiles.
+ * \brief AgentRadixSortDownsweep implements a stateful abstraction of CUDA thread blocks for participating in device-wide radix sort downsweep .
  */
 template <
-    typename BlockRadixSortDownsweepPolicy,             ///< Parameterized BlockRadixSortDownsweepPolicy tuning policy type
+    typename AgentRadixSortDownsweepPolicy,             ///< Parameterized AgentRadixSortDownsweepPolicy tuning policy type
     bool     DESCENDING,                                ///< Whether or not the sorted-order is high-to-low
     typename KeyT,                                       ///< KeyT type
     typename ValueT,                                     ///< ValueT type
     typename OffsetT>                                   ///< Signed integer type for global offsets
-struct BlockRadixSortDownsweep
+struct AgentRadixSortDownsweep
 {
     //---------------------------------------------------------------------
     // Type definitions and constants
@@ -122,19 +120,18 @@ struct BlockRadixSortDownsweep
     static const UnsignedBits MIN_KEY = Traits<KeyT>::MIN_KEY;
     static const UnsignedBits MAX_KEY = Traits<KeyT>::MAX_KEY;
 
-    static const BlockLoadAlgorithm         LOAD_ALGORITHM          = BlockRadixSortDownsweepPolicy::LOAD_ALGORITHM;
-    static const CacheLoadModifier          LOAD_MODIFIER           = BlockRadixSortDownsweepPolicy::LOAD_MODIFIER;
-    static const BlockScanAlgorithm         INNER_SCAN_ALGORITHM    = BlockRadixSortDownsweepPolicy::INNER_SCAN_ALGORITHM;
-    static const RadixSortScatterAlgorithm  SCATTER_ALGORITHM       = BlockRadixSortDownsweepPolicy::SCATTER_ALGORITHM;
-    static const cudaSharedMemConfig        SMEM_CONFIG             = BlockRadixSortDownsweepPolicy::SMEM_CONFIG;
+    static const BlockLoadAlgorithm         LOAD_ALGORITHM          = AgentRadixSortDownsweepPolicy::LOAD_ALGORITHM;
+    static const CacheLoadModifier          LOAD_MODIFIER           = AgentRadixSortDownsweepPolicy::LOAD_MODIFIER;
+    static const BlockScanAlgorithm         INNER_SCAN_ALGORITHM    = AgentRadixSortDownsweepPolicy::INNER_SCAN_ALGORITHM;
+    static const RadixSortScatterAlgorithm  SCATTER_ALGORITHM       = AgentRadixSortDownsweepPolicy::SCATTER_ALGORITHM;
+    static const cudaSharedMemConfig        SMEM_CONFIG             = AgentRadixSortDownsweepPolicy::SMEM_CONFIG;
 
     enum
     {
-        BLOCK_THREADS           = BlockRadixSortDownsweepPolicy::BLOCK_THREADS,
-        ITEMS_PER_THREAD        = BlockRadixSortDownsweepPolicy::ITEMS_PER_THREAD,
-        EXCHANGE_TIME_SLICING   = BlockRadixSortDownsweepPolicy::EXCHANGE_TIME_SLICING,
-        RADIX_BITS              = BlockRadixSortDownsweepPolicy::RADIX_BITS,
-        MEMOIZE_OUTER_SCAN      = BlockRadixSortDownsweepPolicy::MEMOIZE_OUTER_SCAN,
+        BLOCK_THREADS           = AgentRadixSortDownsweepPolicy::BLOCK_THREADS,
+        ITEMS_PER_THREAD        = AgentRadixSortDownsweepPolicy::ITEMS_PER_THREAD,
+        RADIX_BITS              = AgentRadixSortDownsweepPolicy::RADIX_BITS,
+        MEMOIZE_OUTER_SCAN      = AgentRadixSortDownsweepPolicy::MEMOIZE_OUTER_SCAN,
         TILE_ITEMS              = BLOCK_THREADS * ITEMS_PER_THREAD,
 
         RADIX_DIGITS            = 1 << RADIX_BITS,
@@ -156,7 +153,7 @@ struct BlockRadixSortDownsweep
         STORE_TXN_THREADS       = 1 << LOG_STORE_TXN_THREADS,
     };
 
-    // Input iterator wrapper types
+    // Input iterator wrapper type (for applying cache modifier)s
     typedef CacheModifiedInputIterator<LOAD_MODIFIER, UnsignedBits, OffsetT>    KeysItr;
     typedef CacheModifiedInputIterator<LOAD_MODIFIER, ValueT, OffsetT>          ValuesItr;
 
@@ -174,30 +171,26 @@ struct BlockRadixSortDownsweep
         KeysItr,
         BLOCK_THREADS,
         ITEMS_PER_THREAD,
-        LOAD_ALGORITHM,
-        EXCHANGE_TIME_SLICING> BlockLoadKeys;
+        LOAD_ALGORITHM> BlockLoadKeys;
 
     // BlockLoad type (values)
     typedef BlockLoad<
         ValuesItr,
         BLOCK_THREADS,
         ITEMS_PER_THREAD,
-        LOAD_ALGORITHM,
-        EXCHANGE_TIME_SLICING> BlockLoadValues;
+        LOAD_ALGORITHM> BlockLoadValues;
 
     // BlockExchange type (keys)
     typedef BlockExchange<
         UnsignedBits,
         BLOCK_THREADS,
-        ITEMS_PER_THREAD,
-        EXCHANGE_TIME_SLICING> BlockExchangeKeys;
+        ITEMS_PER_THREAD> BlockExchangeKeys;
 
     // BlockExchange type (values)
     typedef BlockExchange<
         ValueT,
         BLOCK_THREADS,
-        ITEMS_PER_THREAD,
-        EXCHANGE_TIME_SLICING> BlockExchangeValues;
+        ITEMS_PER_THREAD> BlockExchangeValues;
 
 
     /**
@@ -423,6 +416,22 @@ struct BlockRadixSortDownsweep
 
 
     /**
+     * Load a tile of items (specialized for full tile)
+     */
+    template <typename BlockLoadT, typename T, typename InputIteratorT>
+    __device__ __forceinline__ void LoadItems(
+        BlockLoadT      &block_loader,
+        T               (&items)[ITEMS_PER_THREAD],
+        InputIteratorT  d_in,
+        OffsetT         valid_items,
+        T               oob_item,
+        Int2Type<true>  is_full_tile)
+    {
+        block_loader.Load(d_in, items);
+    }
+
+
+    /**
      * Load a tile of items (specialized for partial tile)
      */
     template <typename BlockLoadT, typename T, typename InputIteratorT>
@@ -434,6 +443,21 @@ struct BlockRadixSortDownsweep
         Int2Type<false> is_full_tile)
     {
         block_loader.Load(d_in, items, valid_items);
+    }
+
+    /**
+     * Load a tile of items (specialized for partial tile)
+     */
+    template <typename BlockLoadT, typename T, typename InputIteratorT>
+    __device__ __forceinline__ void LoadItems(
+        BlockLoadT      &block_loader,
+        T               (&items)[ITEMS_PER_THREAD],
+        InputIteratorT  d_in,
+        OffsetT         valid_items,
+        T               oob_item,
+        Int2Type<false> is_full_tile)
+    {
+        block_loader.Load(d_in, items, valid_items, oob_item);
     }
 
 
@@ -494,12 +518,8 @@ struct BlockRadixSortDownsweep
         int             ranks[ITEMS_PER_THREAD];                    // For each key, the local rank within the CTA
         OffsetT         relative_bin_offsets[ITEMS_PER_THREAD];     // For each key, the global scatter base offset of the corresponding digit
 
-        // Assign max-key to all keys
-        #pragma unroll
-        for (int ITEM = 0; ITEM < ITEMS_PER_THREAD; ++ITEM)
-        {
-            keys[ITEM] = (DESCENDING) ? MIN_KEY : MAX_KEY;
-        }
+        // Assign default (min/max) value to all keys
+        UnsignedBits default_key = (DESCENDING) ? MIN_KEY : MAX_KEY;
 
         // Load tile of keys
         BlockLoadKeys loader(temp_storage.load_keys);
@@ -508,6 +528,7 @@ struct BlockRadixSortDownsweep
             keys,
             d_keys_in + block_offset,
             valid_items, 
+            default_key,
             Int2Type<FULL_TILE>());
 
         __syncthreads();
@@ -578,6 +599,9 @@ struct BlockRadixSortDownsweep
         GatherScatterValues<FULL_TILE>(values, relative_bin_offsets, ranks, block_offset, valid_items);
     }
 
+    //---------------------------------------------------------------------
+    // Copy shortcut
+    //---------------------------------------------------------------------
 
     /**
      * Copy tiles within the range of input
@@ -636,7 +660,7 @@ struct BlockRadixSortDownsweep
     /**
      * Constructor
      */
-    __device__ __forceinline__ BlockRadixSortDownsweep(
+    __device__ __forceinline__ AgentRadixSortDownsweep(
         TempStorage &temp_storage,
         OffsetT      bin_offset,
         KeyT        *d_keys_in,
@@ -661,7 +685,7 @@ struct BlockRadixSortDownsweep
     /**
      * Constructor
      */
-    __device__ __forceinline__ BlockRadixSortDownsweep(
+    __device__ __forceinline__ AgentRadixSortDownsweep(
         TempStorage &temp_storage,
         OffsetT     num_items,
         OffsetT     *d_spine,
@@ -735,6 +759,7 @@ struct BlockRadixSortDownsweep
             }
         }
     }
+
 };
 
 

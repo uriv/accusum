@@ -1,6 +1,6 @@
 /******************************************************************************
  * Copyright (c) 2011, Duane Merrill.  All rights reserved.
- * Copyright (c) 2011-2014, NVIDIA CORPORATION.  All rights reserved.
+ * Copyright (c) 2011-2015, NVIDIA CORPORATION.  All rights reserved.
  *
  * Redistribution and use in source and binary forms, with or without
  * modification, are permitted provided that the following conditions are met:
@@ -93,8 +93,8 @@ cudaError_t Dispatch(
     size_t              *d_temp_storage_bytes,
     cudaError_t         *d_cdp_error,
 
-    void                *d_temp_storage,
-    size_t              &temp_storage_bytes,
+    void*               d_temp_storage,
+    size_t&             temp_storage_bytes,
     InputIteratorT      d_in,
     OutputIteratorT      d_out,
     int                 num_items,
@@ -122,8 +122,8 @@ cudaError_t Dispatch(
     size_t              *d_temp_storage_bytes,
     cudaError_t         *d_cdp_error,
 
-    void                *d_temp_storage,
-    size_t              &temp_storage_bytes,
+    void*               d_temp_storage,
+    size_t&             temp_storage_bytes,
     InputIteratorT      d_in,
     OutputIteratorT      d_out,
     int                 num_items,
@@ -151,8 +151,8 @@ cudaError_t Dispatch(
     size_t              *d_temp_storage_bytes,
     cudaError_t         *d_cdp_error,
 
-    void                *d_temp_storage,
-    size_t              &temp_storage_bytes,
+    void*               d_temp_storage,
+    size_t&             temp_storage_bytes,
     InputIteratorT      d_in,
     OutputIteratorT      d_out,
     int                 num_items,
@@ -180,8 +180,8 @@ cudaError_t Dispatch(
     size_t              *d_temp_storage_bytes,
     cudaError_t         *d_cdp_error,
 
-    void                *d_temp_storage,
-    size_t              &temp_storage_bytes,
+    void*               d_temp_storage,
+    size_t&             temp_storage_bytes,
     InputIteratorT      d_in,
     OutputIteratorT      d_out,
     int                 num_items,
@@ -209,8 +209,8 @@ cudaError_t Dispatch(
     size_t              *d_temp_storage_bytes,
     cudaError_t         *d_cdp_error,
 
-    void                *d_temp_storage,
-    size_t              &temp_storage_bytes,
+    void*               d_temp_storage,
+    size_t&             temp_storage_bytes,
     InputIteratorT      d_in,
     OutputIteratorT      d_out,
     int                 num_items,
@@ -238,8 +238,8 @@ cudaError_t Dispatch(
     size_t              *d_temp_storage_bytes,
     cudaError_t         *d_cdp_error,
 
-    void                *d_temp_storage,
-    size_t              &temp_storage_bytes,
+    void*               d_temp_storage,
+    size_t&             temp_storage_bytes,
     InputIteratorT      d_in,
     OutputIteratorT      d_out,
     int                 num_items,
@@ -271,8 +271,8 @@ cudaError_t Dispatch(
     size_t              *d_temp_storage_bytes,
     cudaError_t         *d_cdp_error,
 
-    void                *d_temp_storage,
-    size_t              &temp_storage_bytes,
+    void*               d_temp_storage,
+    size_t&             temp_storage_bytes,
     InputIteratorT      d_in,
     OutputIteratorT      d_out,
     int                 num_items,
@@ -314,8 +314,8 @@ cudaError_t Dispatch(
     size_t              *d_temp_storage_bytes,
     cudaError_t         *d_cdp_error,
 
-    void                *d_temp_storage,
-    size_t              &temp_storage_bytes,
+    void*               d_temp_storage,
+    size_t&             temp_storage_bytes,
     InputIteratorT      d_in,
     OutputIteratorT      d_out,
     int                 num_items,
@@ -364,7 +364,7 @@ __global__ void CnpDispatchKernel(
     size_t              *d_temp_storage_bytes,
     cudaError_t         *d_cdp_error,
 
-    void                *d_temp_storage,
+    void*               d_temp_storage,
     size_t              temp_storage_bytes,
     InputIteratorT      d_in,
     OutputIteratorT      d_out,
@@ -392,8 +392,8 @@ cudaError_t Dispatch(
     size_t              *d_temp_storage_bytes,
     cudaError_t         *d_cdp_error,
 
-    void                *d_temp_storage,
-    size_t              &temp_storage_bytes,
+    void*               d_temp_storage,
+    size_t&             temp_storage_bytes,
     InputIteratorT      d_in,
     OutputIteratorT      d_out,
     int                 num_items,
@@ -521,9 +521,9 @@ void Test(
     if (g_timing_iterations > 0)
     {
         float avg_millis = elapsed_millis / g_timing_iterations;
-        float grate = float(num_items) / avg_millis / 1000.0 / 1000.0;
-        float gbandwidth = grate * sizeof(SampleT);
-        printf(", %.3f avg ms, %.3f billion items/s, %.3f logical GB/s", avg_millis, grate, gbandwidth);
+        float giga_rate = float(num_items) / avg_millis / 1000.0 / 1000.0;
+        float giga_bandwidth = giga_rate * sizeof(SampleT);
+        printf(", %.3f avg ms, %.3f billion items/s, %.3f logical GB/s", avg_millis, giga_rate, giga_bandwidth);
     }
 
     if (d_out) CubDebugExit(g_allocator.DeviceFree(d_out));
@@ -547,7 +547,7 @@ void TestPointer(
     int         num_items,
     GenMode     gen_mode,
     ReductionOp reduction_op,
-    char*       type_string)
+    const char* type_string)
 {
     printf("\n\nPointer %s cub::DeviceReduce::%s %d items, %s %d-byte elements, gen-mode %s\n",
         (BACKEND == CDP) ? "CDP CUB" : (BACKEND == THRUST) ? "Thrust" : "CUB",
@@ -593,7 +593,7 @@ void TestPointer(
     int         num_items,
     GenMode     gen_mode,
     ArgMin      reduction_op,
-    char*       type_string)
+    const char* type_string)
 {
     printf("\n\nPointer %s cub::DeviceReduce::%s %d items, %s %d-byte elements, gen-mode %s\n",
         (BACKEND == CDP) ? "CDP CUB" : (BACKEND == THRUST) ? "Thrust" : "CUB",
@@ -603,7 +603,7 @@ void TestPointer(
 
     // Allocate host arrays
     T* h_in = new T[num_items];
-    ItemOffsetPair<T, int> h_reference;
+    KeyValuePair<int, T> h_reference;
 
     // Initialize problem and solution
     printf("Initializing... "); fflush(stdout);
@@ -614,7 +614,7 @@ void TestPointer(
     {
         if (!(h_reference.value != h_in[i]))
         {
-            h_reference.offset = i;
+            h_reference.key = i;
             break;
         }
     }
@@ -646,7 +646,7 @@ void TestPointer(
     int         num_items,
     GenMode     gen_mode,
     ArgMax      reduction_op,
-    char*       type_string)
+    const char* type_string)
 {
     printf("\n\nPointer %s cub::DeviceReduce::%s %d items, %s %d-byte elements, gen-mode %s\n",
         (BACKEND == CDP) ? "CDP CUB" : (BACKEND == THRUST) ? "Thrust" : "CUB",
@@ -656,7 +656,7 @@ void TestPointer(
 
     // Allocate host arrays
     T* h_in = new T[num_items];
-    ItemOffsetPair<T, int> h_reference;
+    KeyValuePair<int, T> h_reference;
 
     // Initialize problem and solution
     printf("Initializing... "); fflush(stdout);
@@ -667,7 +667,7 @@ void TestPointer(
     {
         if (!(h_reference.value != h_in[i]))
         {
-            h_reference.offset = i;
+            h_reference.key = i;
             break;
         }
     }
@@ -699,7 +699,7 @@ template <
 void TestIterator(
     int         num_items,
     ReductionOp reduction_op,
-    char*       type_string)
+    const char* type_string)
 {
     printf("\n\nIterator %s cub::DeviceReduce::%s %d items, %s %d-byte elements\n",
         (BACKEND == CDP) ? "CDP CUB" : (BACKEND == THRUST) ? "Thrust" : "CUB",
@@ -731,7 +731,7 @@ template <
 void TestIterator(
     int         num_items,
     ArgMin      reduction_op,
-    char*       type_string)
+    const char* type_string)
 {
     printf("\n\nIterator %s cub::DeviceReduce::%s %d items, %s %d-byte elements\n",
         (BACKEND == CDP) ? "CDP CUB" : (BACKEND == THRUST) ? "Thrust" : "CUB",
@@ -742,7 +742,7 @@ void TestIterator(
     // Use a constant iterator as the input
     T val = T();
     ConstantInputIterator<T, int> h_in(val);
-    ItemOffsetPair<T, int> h_reference;
+    KeyValuePair<int, T> h_reference;
 
     // Initialize problem and solution
     printf("Solving... "); fflush(stdout);
@@ -751,7 +751,7 @@ void TestIterator(
     {
         if (!(h_reference.value != h_in[i]))
         {
-            h_reference.offset = i;
+            h_reference.key = i;
             break;
         }
     }
@@ -771,7 +771,7 @@ template <
 void TestIterator(
     int         num_items,
     ArgMax      reduction_op,
-    char*       type_string)
+    const char* type_string)
 {
     printf("\n\nIterator %s cub::DeviceReduce::%s %d items, %s %d-byte elements\n",
         (BACKEND == CDP) ? "CDP CUB" : (BACKEND == THRUST) ? "Thrust" : "CUB",
@@ -782,7 +782,7 @@ void TestIterator(
     // Use a constant iterator as the input
     T val = T();
     ConstantInputIterator<T, int> h_in(val);
-    ItemOffsetPair<T, int> h_reference;
+    KeyValuePair<int, T> h_reference;
 
     // Initialize problem and solution
     printf("Solving... "); fflush(stdout);
@@ -791,7 +791,7 @@ void TestIterator(
     {
         if (!(h_reference.value != h_in[i]))
         {
-            h_reference.offset = i;
+            h_reference.key = i;
             break;
         }
     }
@@ -812,7 +812,7 @@ template <
 void Test(
     int             num_items,
     ReductionOp     reduction_op,
-    char*           type_string)
+    const char*     type_string)
 {
 
     TestPointer<BACKEND, T>(num_items, UNIFORM, reduction_op, type_string);
@@ -832,7 +832,7 @@ template <
 void Test(
     int         num_items,
     ReductionOp reduction_op,
-    char*       type_string)
+    const char* type_string)
 {
     Test<CUB, T>(num_items, reduction_op, type_string);
 #ifdef CUB_CDP
@@ -848,7 +848,7 @@ template <
     typename        T>
 void TestOp(
     int             num_items,
-    char*           type_string)
+    const char*     type_string)
 {
     Test<T>(num_items, CustomMax(), type_string);
     Test<T>(num_items, Sum(), type_string);
@@ -866,7 +866,7 @@ template <
     typename        T>
 void Test(
     int             num_items,
-    char*           type_string)
+    const char*     type_string)
 {
     if (num_items < 0)
     {

@@ -1184,7 +1184,7 @@ int         MIN_CONCURRENT_BLOCKS>
 __launch_bounds__ (BLOCK_THREADS, MIN_CONCURRENT_BLOCKS)
 __global__ void DeviceAccurateSumKernel(
 //    double         *d_in,
-    InputIteratorT  d_in,
+    InputIteratorT __restrict__ d_in,
     int             num_items,
     void           *d_accumulators,
     size_t          accumulators_bytes,
@@ -1292,15 +1292,26 @@ struct DeviceAccurateFPSum
         void *h_global_bin_set = NULL;
         ExtremeFlags *h_extreme_flags = NULL;
         cudaError_t error = cudaSuccess;
+        bool use_texture_input = 1;
 
         do {
-            int device_id, sm_count, max_blocks_per_sm;
+            int device_id, sm_count, max_blocks_per_sm, max_texture_1d_linear;
             if (error = CubDebug(cudaGetDevice(&device_id))) break;
             if (error = CubDebug(cudaDeviceGetAttribute(&sm_count, cudaDevAttrMultiProcessorCount, device_id))) break;
-            void (*AccusumKernel)(InputIteratorTexture,int,void*,size_t,void*,size_t,ExtremeFlags*) =
+            if (error = CubDebug(cudaDeviceGetAttribute(&max_texture_1d_linear, cudaDevAttrMaxTexture1DLinearWidth, device_id))) break;
+
+            if (max_texture_1d_linear < num_items)
+                use_texture_input = 0;      // num_items too large for texture
+
+            void (*AccusumKernelInputTexture)(InputIteratorTexture,int,void*,size_t,void*,size_t,ExtremeFlags*) =
                 DeviceAccurateSumKernel<cub::TexObjInputIterator<double>, BLOCK_THREADS, ITEMS_PER_THREAD, EXPANSIONS, RADIX_BITS, MIN_CONCURRENT_BLOCKS>;
-            MaxSmOccupancy(
-                max_blocks_per_sm, AccusumKernel, BLOCK_THREADS);
+            void (*AccusumKernelInputPtr)(const double*,int,void*,size_t,void*,size_t,ExtremeFlags*) =
+                DeviceAccurateSumKernel<const double*, BLOCK_THREADS, ITEMS_PER_THREAD, EXPANSIONS, RADIX_BITS, MIN_CONCURRENT_BLOCKS>;
+            if (use_texture_input)
+                MaxSmOccupancy(max_blocks_per_sm, AccusumKernelInputTexture, BLOCK_THREADS);
+            else
+                MaxSmOccupancy(max_blocks_per_sm, AccusumKernelInputPtr, BLOCK_THREADS);
+
             int grid_size = CUB_MAX(sm_count * max_blocks_per_sm, CUB_ROUND_UP_NEAREST(CUB_QUOTIENT_CEILING(num_items, BinMeta::BIN_CAPACITY), sm_count));
             // Temporary storage allocation requirements
             void* allocations[2];
@@ -1335,24 +1346,46 @@ struct DeviceAccurateFPSum
 
             if (error = CubDebug(cudaMemsetAsync(d_temp_storage, 0, temp_storage_bytes, stream))) break;
 
-            typedef cub::TexObjInputIterator<double> InputIteratorTexture;
-            InputIteratorTexture itr;
-            itr.BindTexture(d_in, sizeof(double) * num_items);
 
-            //warm-up
-            AccusumKernel<<<grid_size, BLOCK_THREADS, 0, stream>>>(
-            itr/*NULL*/,0,NULL,0,NULL,0,NULL);
+            if (use_texture_input)
+            {
+                typedef cub::TexObjInputIterator<double> InputIteratorTexture;
+                InputIteratorTexture itr;
 
-            //cudaProfilerStart();
-            AccusumKernel<<<grid_size, BLOCK_THREADS, 0, stream>>>(
-                itr,//d_in,
-                num_items,
-                d_bin_sets,
-                0,//temp_reduce_size,
-                d_global_bin_set,
-                0,//temp_global_bin_set_size,
-                d_extreme_flags);
-            //cudaProfilerStop();
+                //warm-up
+                if (error = CubDebug(itr.BindTexture(d_in, sizeof(double) * num_items))) break;
+
+                AccusumKernelInputTexture<<<grid_size, BLOCK_THREADS, 0, stream>>>(
+                    itr,0,NULL,0,NULL,0,NULL);
+                //cudaProfilerStart();
+                AccusumKernelInputTexture<<<grid_size, BLOCK_THREADS, 0, stream>>>(
+                    itr,
+                    num_items,
+                    d_bin_sets,
+                    0,//temp_reduce_size,
+                    d_global_bin_set,
+                    0,//temp_global_bin_set_size,
+                    d_extreme_flags);
+                //cudaProfilerStop();
+                itr.UnbindTexture();
+            }
+            else
+            {
+                //warm-up
+                AccusumKernelInputPtr<<<grid_size, BLOCK_THREADS, 0, stream>>>(
+                    NULL,0,NULL,0,NULL,0,NULL);
+                //cudaProfilerStart();
+                AccusumKernelInputPtr<<<grid_size, BLOCK_THREADS, 0, stream>>>(
+                    d_in,
+                    num_items,
+                    d_bin_sets,
+                    0,//temp_reduce_size,
+                    d_global_bin_set,
+                    0,//temp_global_bin_set_size,
+                    d_extreme_flags);
+                //cudaProfilerStop();
+
+            }
 
 //            double* h_items = (double*)malloc(num_items * sizeof(double));
 //            CubDebugExit(cudaMemcpy(h_items, d_in, num_items * sizeof(double), cudaMemcpyDeviceToHost));
@@ -1363,8 +1396,6 @@ struct DeviceAccurateFPSum
             //        if (error = CubDebug(cudaMemcpy(h_global_bin_set, d_global_bin_set, allocation_sizes[0], cudaMemcpyDeviceToHost, stream))) break;
             if (error = CubDebug(cudaMemcpyAsync(h_extreme_flags, d_extreme_flags, allocation_sizes[1], cudaMemcpyDeviceToHost, stream))) break;
             if (error = CubDebug(cudaStreamSynchronize(stream))) break;
-
-            itr.UnbindTexture();
 
             double result;
             if (h_extreme_flags->nan)

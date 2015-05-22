@@ -1,6 +1,6 @@
 /******************************************************************************
  * Copyright (c) 2011, Duane Merrill.  All rights reserved.
- * Copyright (c) 2011-2014, NVIDIA CORPORATION.  All rights reserved.
+ * Copyright (c) 2011-2015, NVIDIA CORPORATION.  All rights reserved.
  *
  * Redistribution and use in source and binary forms, with or without
  * modification, are permitted provided that the following conditions are met:
@@ -54,6 +54,7 @@ using namespace cub;
 bool                    g_verbose           = false;
 int                     g_timing_iterations = 0;
 int                     g_repeat            = 0;
+double                  g_device_giga_bandwidth;
 CachingDeviceAllocator  g_allocator(true);
 
 // Dispatch types
@@ -80,8 +81,8 @@ cudaError_t Dispatch(
     size_t              *d_temp_storage_bytes,
     cudaError_t         *d_cdp_error,
 
-    void                *d_temp_storage,
-    size_t              &temp_storage_bytes,
+    void*               d_temp_storage,
+    size_t&             temp_storage_bytes,
     InputIteratorT      d_in,
     OutputIteratorT      d_out,
     ScanOp              scan_op,
@@ -110,8 +111,8 @@ cudaError_t Dispatch(
     size_t              *d_temp_storage_bytes,
     cudaError_t         *d_cdp_error,
 
-    void                *d_temp_storage,
-    size_t              &temp_storage_bytes,
+    void*               d_temp_storage,
+    size_t&             temp_storage_bytes,
     InputIteratorT      d_in,
     OutputIteratorT      d_out,
     Sum                 scan_op,
@@ -140,8 +141,8 @@ cudaError_t Dispatch(
     size_t              *d_temp_storage_bytes,
     cudaError_t         *d_cdp_error,
 
-    void                *d_temp_storage,
-    size_t              &temp_storage_bytes,
+    void*               d_temp_storage,
+    size_t&             temp_storage_bytes,
     InputIteratorT      d_in,
     OutputIteratorT      d_out,
     ScanOp              scan_op,
@@ -170,8 +171,8 @@ cudaError_t Dispatch(
     size_t              *d_temp_storage_bytes,
     cudaError_t         *d_cdp_error,
 
-    void                *d_temp_storage,
-    size_t              &temp_storage_bytes,
+    void*               d_temp_storage,
+    size_t&             temp_storage_bytes,
     InputIteratorT      d_in,
     OutputIteratorT      d_out,
     Sum                 scan_op,
@@ -202,8 +203,8 @@ cudaError_t Dispatch(
     size_t              *d_temp_storage_bytes,
     cudaError_t         *d_cdp_error,
 
-    void                *d_temp_storage,
-    size_t              &temp_storage_bytes,
+    void*               d_temp_storage,
+    size_t&             temp_storage_bytes,
     InputIteratorT      d_in,
     OutputIteratorT      d_out,
     ScanOp              scan_op,
@@ -242,8 +243,8 @@ cudaError_t Dispatch(
     size_t              *d_temp_storage_bytes,
     cudaError_t         *d_cdp_error,
 
-    void                *d_temp_storage,
-    size_t              &temp_storage_bytes,
+    void*               d_temp_storage,
+    size_t&             temp_storage_bytes,
     InputIteratorT      d_in,
     OutputIteratorT      d_out,
     Sum                 scan_op,
@@ -282,8 +283,8 @@ cudaError_t Dispatch(
     size_t              *d_temp_storage_bytes,
     cudaError_t         *d_cdp_error,
 
-    void                *d_temp_storage,
-    size_t              &temp_storage_bytes,
+    void*               d_temp_storage,
+    size_t&             temp_storage_bytes,
     InputIteratorT      d_in,
     OutputIteratorT      d_out,
     ScanOp              scan_op,
@@ -322,8 +323,8 @@ cudaError_t Dispatch(
     size_t              *d_temp_storage_bytes,
     cudaError_t         *d_cdp_error,
 
-    void                *d_temp_storage,
-    size_t              &temp_storage_bytes,
+    void*               d_temp_storage,
+    size_t&             temp_storage_bytes,
     InputIteratorT      d_in,
     OutputIteratorT      d_out,
     Sum                 scan_op,
@@ -366,7 +367,7 @@ __global__ void CnpDispatchKernel(
     size_t              *d_temp_storage_bytes,
     cudaError_t         *d_cdp_error,
 
-    void                *d_temp_storage,
+    void*               d_temp_storage,
     size_t              temp_storage_bytes,
     InputIteratorT      d_in,
     OutputIteratorT      d_out,
@@ -394,8 +395,8 @@ cudaError_t Dispatch(
     size_t              *d_temp_storage_bytes,
     cudaError_t         *d_cdp_error,
 
-    void                *d_temp_storage,
-    size_t              &temp_storage_bytes,
+    void*               d_temp_storage,
+    size_t&             temp_storage_bytes,
     InputIteratorT      d_in,
     OutputIteratorT      d_out,
     ScanOp              scan_op,
@@ -524,7 +525,7 @@ void Test(
     int                 num_items,
     ScanOp              scan_op,
     IdentityT           identity,
-    char*               type_string)
+    const char*         type_string)
 {
     // Allocate device output array
     T *d_out = NULL;
@@ -567,9 +568,9 @@ void Test(
     if (g_timing_iterations > 0)
     {
         float avg_millis = elapsed_millis / g_timing_iterations;
-        float grate = float(num_items) / avg_millis / 1000.0 / 1000.0;
-        float gbandwidth = grate * sizeof(T) * 2;
-        printf(", %.3f avg ms, %.3f billion items/s, %.3f logical GB/s", avg_millis, grate, gbandwidth);
+        float giga_rate = float(num_items) / avg_millis / 1000.0 / 1000.0;
+        float giga_bandwidth = giga_rate * sizeof(T) * 2;
+        printf(", %.3f avg ms, %.3f billion items/s, %.3f logical GB/s, %.1f%% peak", avg_millis, giga_rate, giga_bandwidth, giga_bandwidth / g_device_giga_bandwidth * 100.0);
     }
 
     printf("\n\n");
@@ -598,7 +599,7 @@ void TestPointer(
     GenMode         gen_mode,
     ScanOp          scan_op,
     IdentityT       identity,
-    char*           type_string)
+    const char*     type_string)
 {
     printf("\nPointer %s %s cub::DeviceScan::%s %d items, %s %d-byte elements, gen-mode %s\n",
         (BACKEND == CDP) ? "CDP CUB" : (BACKEND == THRUST) ? "Thrust" : "CUB",
@@ -647,7 +648,7 @@ void TestIterator(
     int             num_items,
     ScanOp          scan_op,
     IdentityT       identity,
-    char*           type_string)
+    const char*     type_string)
 {
     printf("\nIterator %s %s cub::DeviceScan::%s %d items, %s %d-byte elements\n",
         (BACKEND == CDP) ? "CDP CUB" : (BACKEND == THRUST) ? "Thrust" : "CUB",
@@ -688,7 +689,7 @@ void Test(
     int             num_items,
     ScanOp          scan_op,
     Identity        identity,
-    char*           type_string)
+    const char*     type_string)
 {
     TestPointer<BACKEND, T>(num_items, UNIFORM, scan_op, identity, type_string);
     TestPointer<BACKEND, T>(num_items, RANDOM, scan_op, identity, type_string);
@@ -708,7 +709,7 @@ void Test(
     int             num_items,
     ScanOp          scan_op,
     IdentityT       identity,
-    char*           type_string)
+    const char*     type_string)
 {
     Test<CUB, T>(num_items, scan_op, identity, type_string);
 #ifdef CUB_CDP
@@ -729,7 +730,7 @@ void TestVariant(
     int             num_items,
     ScanOp          scan_op,
     T               identity,
-    char*           type_string)
+    const char*     type_string)
 {
     Test<T>(num_items, scan_op, identity, type_string);     // exclusive
     Test<T>(num_items, scan_op, NullType(), type_string);   // inclusive
@@ -743,7 +744,7 @@ template <typename T>
 void TestOp(
     int             num_items,
     T               max_identity,
-    char*           type_string)
+    const char*     type_string)
 {
     TestVariant(num_items, Sum(), T(), type_string);
     TestVariant(num_items, Max(), max_identity, type_string);
@@ -757,7 +758,7 @@ template <typename T>
 void TestSize(
     int             num_items,
     T               max_identity,
-    char*           type_string)
+    const char*     type_string)
 {
     if (num_items < 0)
     {
@@ -819,15 +820,8 @@ int main(int argc, char** argv)
 
     // Initialize device
     CubDebugExit(args.DeviceInit());
+    g_device_giga_bandwidth = args.device_giga_bandwidth;
     printf("\n");
-
-    // Get device ordinal
-    int device_ordinal;
-    CubDebugExit(cudaGetDevice(&device_ordinal));
-
-    // Get device SM version
-    int sm_version;
-    CubDebugExit(SmVersion(sm_version, device_ordinal));
 
 #ifdef QUICKER_TEST
 
@@ -836,6 +830,14 @@ int main(int argc, char** argv)
     TestPointer<CUB, int>(         num_items    , UNIFORM, Sum(), (int) (0), CUB_TYPE_STRING(int));
 
 #elif defined(QUICK_TEST)
+
+    // Get device ordinal
+    int device_ordinal;
+    CubDebugExit(cudaGetDevice(&device_ordinal));
+
+    // Get device SM version
+    int sm_version;
+    CubDebugExit(SmVersion(sm_version, device_ordinal));
 
     // Compile/run quick tests
     if (num_items < 0) num_items = 32000000;

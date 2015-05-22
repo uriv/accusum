@@ -1,5 +1,39 @@
 //-----------------------------------------------------------------------------
 
+1.4.1    04/13/2015
+    - Bug fixes: 
+        - Fixes for CUDA 7.0 issues with SHFL-based warp-scan and warp-reduction 
+          on non-primitive data types (e.g., user-defined structs)
+        - Fixes for minor CUDA 7.0 performance regressions in cub::DeviceScan,
+          DeviceReduceByKey
+        - Fixes to allow cub::DeviceRadixSort and cub::BlockRadixSort on bool types
+        - Remove requirement for callers to define the CUB_CDP macro 
+          when invoking CUB device-wide rountines using CUDA dynamic parallelism
+        - Fix for headers not being included in the proper order (or missing includes)
+          for some block-wide functions
+          
+//-----------------------------------------------------------------------------
+
+1.4.0    03/18/2015
+    - New Features:
+		- Support and performance tuning for new Maxwell GPU architectures
+        - Updated cub::DeviceHistogram implementation that provides the same 
+          "histogram-even" and "histogram-range" functionality as IPP/NPP.
+          Provides extremely fast and, perhaps more importantly, very 
+          uniform performance response across diverse real-world datasets, 
+          including pathological (homogeneous) sample distributions (resilience)
+        - New cub::DeviceSpmv methods for multiplying sparse matrices by 
+          dense vectors, load-balanced using a merge-based parallel decomposition.
+        - New cub::DeviceRadixSort sorting entry-points that always return
+          the sorted output into the specified buffer (as opposed to the 
+          cub::DoubleBuffer in which it could end up in either buffer)
+        - New cub::DeviceRunLengthEncode::NonTrivialRuns for finding the starting 
+          offsets and lengths of all non-trivial runs (i.e., length > 1) of keys in 
+          a given sequence.  (Useful for top-down partitioning algorithms like 
+          MSD sorting of very-large keys.)
+          
+//-----------------------------------------------------------------------------
+
 1.3.2    07/28/2014
     - Bug fixes: 
         - Fix for cub::DeviceReduce where reductions of small problems 
@@ -98,7 +132,7 @@
         - Added min, max, arg-min, and arg-max to DeviceReduce
         - Added DeviceSelect (select-unique, select-if, and select-flagged)
         - Added DevicePartition (partition-if, partition-flagged)
-        - Added generic cub::ShuffleUp(), cub::ShuffleDown(), and cub::ShuffleBroadcast() for warp-wide communication of arbitrary data types (SM3x+)
+        - Added generic cub::ShuffleUp(), cub::ShuffleDown(), and cub::ShuffleIndex() for warp-wide communication of arbitrary data types (SM3x+)
         - Added cub::MaxSmOccupancy() for accurately determining SM occupancy for any given kernel function pointer
     - Performance
         - Improved DeviceScan and DeviceRadixSort performance for older architectures (SM10-SM30)

@@ -1,6 +1,6 @@
 /******************************************************************************
  * Copyright (c) 2011, Duane Merrill.  All rights reserved.
- * Copyright (c) 2011-2014, NVIDIA CORPORATION.  All rights reserved.
+ * Copyright (c) 2011-2015, NVIDIA CORPORATION.  All rights reserved.
  *
  * Redistribution and use in source and binary forms, with or without
  * modification, are permitted provided that the following conditions are met:
@@ -61,14 +61,14 @@ namespace cub {
  */
 template <
     typename T,                 ///< BlockScan value type
-    typename ScanOp>            ///< Wrapped scan operator type
+    typename ScanOpT>            ///< Wrapped scan operator type
 struct BlockScanRunningPrefixOp
 {
-    ScanOp  op;                 ///< Wrapped scan operator
+    ScanOpT  op;                 ///< Wrapped scan operator
     T       running_total;      ///< Running block-wide prefix
 
     /// Constructor
-    __device__ __forceinline__ BlockScanRunningPrefixOp(ScanOp op)
+    __device__ __forceinline__ BlockScanRunningPrefixOp(ScanOpT op)
     :
         op(op)
     {}
@@ -76,7 +76,7 @@ struct BlockScanRunningPrefixOp
     /// Constructor
     __device__ __forceinline__ BlockScanRunningPrefixOp(
         T starting_prefix,
-        ScanOp op)
+        ScanOpT op)
     :
         op(op),
         running_total(starting_prefix)
@@ -442,9 +442,9 @@ struct ScanTileState<T, false>
  *
  */
 template <
-    typename    Value,
-    typename    OffsetT,
-    bool        SINGLE_WORD = (Traits<Value>::PRIMITIVE) && (sizeof(Value) + sizeof(OffsetT) < 16)>
+    typename    ValueT,
+    typename    KeyT,
+    bool        SINGLE_WORD = (Traits<ValueT>::PRIMITIVE) && (sizeof(ValueT) + sizeof(KeyT) < 16)>
 struct ReduceByKeyScanTileState;
 
 
@@ -453,12 +453,12 @@ struct ReduceByKeyScanTileState;
  * cannot be combined into one machine word.
  */
 template <
-    typename    Value,
-    typename    OffsetT>
-struct ReduceByKeyScanTileState<Value, OffsetT, false> :
-    ScanTileState<ItemOffsetPair<Value, OffsetT> >
+    typename    ValueT,
+    typename    KeyT>
+struct ReduceByKeyScanTileState<ValueT, KeyT, false> :
+    ScanTileState<KeyValuePair<KeyT, ValueT> >
 {
-    typedef ScanTileState<ItemOffsetPair<Value, OffsetT> > SuperClass;
+    typedef ScanTileState<KeyValuePair<KeyT, ValueT> > SuperClass;
 
     /// Constructor
     __host__ __device__ __forceinline__
@@ -471,16 +471,16 @@ struct ReduceByKeyScanTileState<Value, OffsetT, false> :
  * can be combined into one machine word that can be read/written coherently in a single access.
  */
 template <
-    typename Value,
-    typename OffsetT>
-struct ReduceByKeyScanTileState<Value, OffsetT, true>
+    typename ValueT,
+    typename KeyT>
+struct ReduceByKeyScanTileState<ValueT, KeyT, true>
 {
-    typedef ItemOffsetPair<Value, OffsetT>ReductionOffsetPair;
+    typedef KeyValuePair<KeyT, ValueT>KeyValuePairT;
 
     // Constants
     enum
     {
-        PAIR_SIZE           = sizeof(Value) + sizeof(OffsetT),
+        PAIR_SIZE           = sizeof(ValueT) + sizeof(KeyT),
         TXN_WORD_SIZE       = 1 << Log2<PAIR_SIZE + 1>::VALUE,
         STATUS_WORD_SIZE    = TXN_WORD_SIZE - PAIR_SIZE,
 
@@ -503,25 +503,25 @@ struct ReduceByKeyScanTileState<Value, OffsetT, true>
             long long,
             int>::Type>::Type TxnWord;
 
-    // Device word type (for when sizeof(Value) == sizeof(OffsetT))
+    // Device word type (for when sizeof(ValueT) == sizeof(KeyT))
     struct TileDescriptorBigStatus
     {
-        OffsetT     offset;
-        Value       value;
+        KeyT        key;
+        ValueT      value;
         StatusWord  status;
     };
 
-    // Device word type (for when sizeof(Value) != sizeof(OffsetT))
+    // Device word type (for when sizeof(ValueT) != sizeof(KeyT))
     struct TileDescriptorLittleStatus
     {
-        Value       value;
+        ValueT      value;
         StatusWord  status;
-        OffsetT     offset;
+        KeyT        key;
     };
 
     // Device word type
     typedef typename If<
-            (sizeof(Value) == sizeof(OffsetT)),
+            (sizeof(ValueT) == sizeof(KeyT)),
             TileDescriptorBigStatus,
             TileDescriptorLittleStatus>::Type
         TileDescriptor;
@@ -587,12 +587,12 @@ struct ReduceByKeyScanTileState<Value, OffsetT, true>
     /**
      * Update the specified tile's inclusive value and corresponding status
      */
-    __device__ __forceinline__ void SetInclusive(int tile_idx, ReductionOffsetPair tile_inclusive)
+    __device__ __forceinline__ void SetInclusive(int tile_idx, KeyValuePairT tile_inclusive)
     {
         TileDescriptor tile_descriptor;
-        tile_descriptor.status = SCAN_TILE_INCLUSIVE;
-        tile_descriptor.value = tile_inclusive.value;
-        tile_descriptor.offset = tile_inclusive.offset;
+        tile_descriptor.status  = SCAN_TILE_INCLUSIVE;
+        tile_descriptor.value   = tile_inclusive.value;
+        tile_descriptor.key     = tile_inclusive.key;
 
         TxnWord alias;
         *reinterpret_cast<TileDescriptor*>(&alias) = tile_descriptor;
@@ -603,12 +603,12 @@ struct ReduceByKeyScanTileState<Value, OffsetT, true>
     /**
      * Update the specified tile's partial value and corresponding status
      */
-    __device__ __forceinline__ void SetPartial(int tile_idx, ReductionOffsetPair tile_partial)
+    __device__ __forceinline__ void SetPartial(int tile_idx, KeyValuePairT tile_partial)
     {
         TileDescriptor tile_descriptor;
-        tile_descriptor.status = SCAN_TILE_PARTIAL;
-        tile_descriptor.value = tile_partial.value;
-        tile_descriptor.offset = tile_partial.offset;
+        tile_descriptor.status  = SCAN_TILE_PARTIAL;
+        tile_descriptor.value   = tile_partial.value;
+        tile_descriptor.key     = tile_partial.key;
 
         TxnWord alias;
         *reinterpret_cast<TileDescriptor*>(&alias) = tile_descriptor;
@@ -619,15 +619,15 @@ struct ReduceByKeyScanTileState<Value, OffsetT, true>
      * Wait for the corresponding tile to become non-invalid
      */
     __device__ __forceinline__ void WaitForValid(
-        int             tile_idx,
-        StatusWord      &status,
-        ReductionOffsetPair  &value)
+        int                     tile_idx,
+        StatusWord              &status,
+        KeyValuePairT           &value)
     {
         // Use warp-any to determine when all threads have valid status
         TxnWord alias = ThreadLoad<LOAD_CG>(reinterpret_cast<TxnWord*>(d_tile_status + TILE_STATUS_PADDING + tile_idx));
         TileDescriptor tile_descriptor = reinterpret_cast<TileDescriptor&>(alias);
 
-        while (WarpAny(tile_descriptor.status == SCAN_TILE_INVALID))
+        while (tile_descriptor.status == SCAN_TILE_INVALID)
         {
             alias = ThreadLoad<LOAD_CG>(reinterpret_cast<TxnWord*>(d_tile_status + TILE_STATUS_PADDING + tile_idx));
             tile_descriptor = reinterpret_cast<TileDescriptor&>(alias);
@@ -635,7 +635,7 @@ struct ReduceByKeyScanTileState<Value, OffsetT, true>
 
         status = tile_descriptor.status;
         value.value = tile_descriptor.value;
-        value.offset = tile_descriptor.offset;
+        value.key = tile_descriptor.key;
     }
 
 };
@@ -653,36 +653,41 @@ struct ReduceByKeyScanTileState<Value, OffsetT, true>
  */
 template <
     typename T,
-    typename ScanOp,
-    typename ScanTileState>
-struct BlockScanLookbackPrefixOp
+    typename ScanOpT,
+    typename ScanTileStateT>
+struct TilePrefixCallbackOp
 {
     // Parameterized warp reduce
     typedef WarpReduce<T> WarpReduceT;
 
     // Temporary storage type
-    typedef typename WarpReduceT::TempStorage _TempStorage;
+    struct _TempStorage
+    {
+        typename WarpReduceT::TempStorage   warp_reduce;
+        T                                   exclusive_prefix;
+        T                                   inclusive_prefix;
+    };
 
     // Alias wrapper allowing temporary storage to be unioned
     struct TempStorage : Uninitialized<_TempStorage> {};
 
     // Type of status word
-    typedef typename ScanTileState::StatusWord StatusWord;
+    typedef typename ScanTileStateT::StatusWord StatusWord;
 
     // Fields
-    ScanTileState               &tile_status;       ///< Interface to tile status
-    _TempStorage                &temp_storage;      ///< Reference to a warp-reduction instance
-    ScanOp                      scan_op;            ///< Binary scan operator
+    _TempStorage&               temp_storage;       ///< Reference to a warp-reduction instance
+    ScanTileStateT&             tile_status;        ///< Interface to tile status
+    ScanOpT                     scan_op;            ///< Binary scan operator
     int                         tile_idx;           ///< The current tile index
     T                           exclusive_prefix;   ///< Exclusive prefix for the tile
     T                           inclusive_prefix;   ///< Inclusive prefix for the tile
 
     // Constructor
     __device__ __forceinline__
-    BlockScanLookbackPrefixOp(
-        ScanTileState       &tile_status,
+    TilePrefixCallbackOp(
+        ScanTileStateT       &tile_status,
         TempStorage         &temp_storage,
-        ScanOp              scan_op,
+        ScanOpT              scan_op,
         int                 tile_idx)
     :
         tile_status(tile_status),
@@ -702,12 +707,13 @@ struct BlockScanLookbackPrefixOp
         tile_status.WaitForValid(predecessor_idx, predecessor_status, value);
 
         // Perform a segmented reduction to get the prefix for the current window.
-        int tail_flag = (predecessor_status == StatusWord(SCAN_TILE_INCLUSIVE));
+        // Use the swizzled scan operator because we are now scanning *down* towards thread0.
 
-        window_aggregate = WarpReduceT(temp_storage).TailSegmentedReduce(
+        int tail_flag = (predecessor_status == StatusWord(SCAN_TILE_INCLUSIVE));
+        window_aggregate = WarpReduceT(temp_storage.warp_reduce).TailSegmentedReduce(
             value,
             tail_flag,
-            scan_op);
+            SwizzleScanOp<ScanOpT>(scan_op));
     }
 
 
@@ -746,11 +752,29 @@ struct BlockScanLookbackPrefixOp
         {
             inclusive_prefix = scan_op(exclusive_prefix, block_aggregate);
             tile_status.SetInclusive(tile_idx, inclusive_prefix);
+
+            temp_storage.exclusive_prefix = exclusive_prefix;
+            temp_storage.inclusive_prefix = inclusive_prefix;
         }
 
         // Return exclusive_prefix
         return exclusive_prefix;
     }
+
+    // Get the exclusive prefix stored in temporary storage
+    __device__ __forceinline__
+    T GetExclusivePrefix()
+    {
+        return temp_storage.exclusive_prefix;
+    }
+
+    // Get the inclusive prefix stored in temporary storage
+    __device__ __forceinline__
+    T GetInclusivePrefix()
+    {
+        return temp_storage.inclusive_prefix;
+    }
+
 };
 
 

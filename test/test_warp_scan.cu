@@ -1,6 +1,6 @@
 /******************************************************************************
  * Copyright (c) 2011, Duane Merrill.  All rights reserved.
- * Copyright (c) 2011-2014, NVIDIA CORPORATION.  All rights reserved.
+ * Copyright (c) 2011-2015, NVIDIA CORPORATION.  All rights reserved.
  *
  * Redistribution and use in source and binary forms, with or without
  * modification, are permitted provided that the following conditions are met:
@@ -35,8 +35,8 @@
 
 #include <stdio.h>
 
-#include <cub/util_allocator.cuh>
 #include <cub/warp/warp_scan.cuh>
+#include <cub/util_allocator.cuh>
 
 #include "test_util.h"
 
@@ -553,10 +553,9 @@ int main(int argc, char** argv)
     Test<32, AGGREGATE>(UNIFORM, Sum(), (long long) 0, (long long) 99, CUB_TYPE_STRING(Sum<long long>));
     Test<32, AGGREGATE>(UNIFORM, Sum(), (double) 0, (double) 99, CUB_TYPE_STRING(Sum<double>));
 
-    typedef ItemOffsetPair<float, int> T;
+    typedef KeyValuePair<int, float> T;
     cub::Sum sum_op;
-    Test<32, AGGREGATE>(UNIFORM, ReduceBySegmentOp<cub::Sum, T>(sum_op), ZeroInitialize<T>(), ZeroInitialize<T>(), CUB_TYPE_STRING(T));
-
+    Test<32, AGGREGATE>(UNIFORM, ReduceBySegmentOp<cub::Sum>(sum_op), ZeroInitialize<T>(), ZeroInitialize<T>(), CUB_TYPE_STRING(T));
 
 #else
 

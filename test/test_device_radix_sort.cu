@@ -1,6 +1,6 @@
 /******************************************************************************
  * Copyright (c) 2011, Duane Merrill.  All rights reserved.
- * Copyright (c) 2011-2014, NVIDIA CORPORATION.  All rights reserved.
+ * Copyright (c) 2011-2015, NVIDIA CORPORATION.  All rights reserved.
  *
  * Redistribution and use in source and binary forms, with or without
  * modification, are permitted provided that the following conditions are met:
@@ -83,8 +83,8 @@ cudaError_t Dispatch(
     size_t              *d_temp_storage_bytes,
     cudaError_t         *d_cdp_error,
 
-    void                *d_temp_storage,
-    size_t              &temp_storage_bytes,
+    void*               d_temp_storage,
+    size_t&             temp_storage_bytes,
     DoubleBuffer<Key>   &d_keys,
     DoubleBuffer<Value> &d_values,
     int                 num_items,
@@ -108,8 +108,8 @@ cudaError_t Dispatch(
     size_t              *d_temp_storage_bytes,
     cudaError_t         *d_cdp_error,
 
-    void                *d_temp_storage,
-    size_t              &temp_storage_bytes,
+    void*               d_temp_storage,
+    size_t&             temp_storage_bytes,
     DoubleBuffer<Key>   &d_keys,
     DoubleBuffer<Value> &d_values,
     int                 num_items,
@@ -140,8 +140,8 @@ cudaError_t Dispatch(
     size_t              *d_temp_storage_bytes,
     cudaError_t         *d_cdp_error,
 
-    void                *d_temp_storage,
-    size_t              &temp_storage_bytes,
+    void*               d_temp_storage,
+    size_t&             temp_storage_bytes,
     DoubleBuffer<Key>   &d_keys,
     DoubleBuffer<Value> &d_values,
     int                 num_items,
@@ -166,8 +166,8 @@ cudaError_t Dispatch(
     size_t              *d_temp_storage_bytes,
     cudaError_t         *d_cdp_error,
 
-    void                *d_temp_storage,
-    size_t              &temp_storage_bytes,
+    void*               d_temp_storage,
+    size_t&             temp_storage_bytes,
     DoubleBuffer<Key>   &d_keys,
     DoubleBuffer<Value> &d_values,
     int                 num_items,
@@ -196,7 +196,7 @@ cudaError_t Dispatch(
     int                     *d_selector,
     size_t                  *d_temp_storage_bytes,
     cudaError_t             *d_cdp_error,
-    void                    *d_temp_storage,
+    void*               d_temp_storage,
     size_t                  &temp_storage_bytes,
     DoubleBuffer<Key>       &d_keys,
     DoubleBuffer<NullType>  &d_values,
@@ -234,7 +234,7 @@ cudaError_t Dispatch(
     int                     *d_selector,
     size_t                  *d_temp_storage_bytes,
     cudaError_t             *d_cdp_error,
-    void                    *d_temp_storage,
+    void*               d_temp_storage,
     size_t                  &temp_storage_bytes,
     DoubleBuffer<Key>       &d_keys,
     DoubleBuffer<Value>     &d_values,
@@ -285,7 +285,7 @@ __global__ void CnpDispatchKernel(
     size_t                  *d_temp_storage_bytes,
     cudaError_t             *d_cdp_error,
 
-    void                    *d_temp_storage,
+    void*               d_temp_storage,
     size_t                  temp_storage_bytes,
     DoubleBuffer<Key>       d_keys,
     DoubleBuffer<Value>     d_values,
@@ -315,7 +315,7 @@ cudaError_t Dispatch(
     size_t                  *d_temp_storage_bytes,
     cudaError_t             *d_cdp_error,
 
-    void                    *d_temp_storage,
+    void*               d_temp_storage,
     size_t                  &temp_storage_bytes,
     DoubleBuffer<Key>       &d_keys,
     DoubleBuffer<Value>     &d_values,
@@ -583,11 +583,11 @@ void Test(
     if (g_timing_iterations > 0)
     {
         float avg_millis = elapsed_millis / g_timing_iterations;
-        float grate = float(num_items) / avg_millis / 1000.0 / 1000.0;
-        float gbandwidth = (KEYS_ONLY) ?
-            grate * sizeof(Key) * 2 :
-            grate * (sizeof(Key) + sizeof(Value)) * 2;
-        printf("\n%.3f elapsed ms, %.3f avg ms, %.3f billion items/s, %.3f logical GB/s", elapsed_millis, avg_millis, grate, gbandwidth);
+        float giga_rate = float(num_items) / avg_millis / 1000.0 / 1000.0;
+        float giga_bandwidth = (KEYS_ONLY) ?
+            giga_rate * sizeof(Key) * 2 :
+            giga_rate * (sizeof(Key) + sizeof(Value)) * 2;
+        printf("\n%.3f elapsed ms, %.3f avg ms, %.3f billion items/s, %.3f logical GB/s", elapsed_millis, avg_millis, giga_rate, giga_bandwidth);
     }
 
     printf("\n\n");
@@ -636,7 +636,7 @@ void TestBackend(
         }
     }
 
-//    Test<CUB, IS_DESCENDING>(h_keys, h_values, num_items, begin_bit, end_bit, h_reference_keys, h_reference_values);
+    Test<CUB, IS_DESCENDING>(h_keys, h_values, num_items, begin_bit, end_bit, h_reference_keys, h_reference_values);
     Test<CUB_DB, IS_DESCENDING>(h_keys, h_values, num_items, begin_bit, end_bit, h_reference_keys, h_reference_values);
 
 #ifdef CUB_CDP
@@ -750,7 +750,7 @@ void TestSizes(
 template <typename Key>
 void TestGen(
     int             max_items,
-    char*           type_string)
+    const char*     type_string)
 {
     if (max_items < 0)
     {
@@ -880,8 +880,12 @@ int main(int argc, char** argv)
 
     // Compile/run basic CUB test
     if (num_items < 0) num_items = 32000000;
+
     Test<CUB, unsigned int, NullType, false> (num_items, RANDOM, entropy_reduction, 0, bits, CUB_TYPE_STRING(unsigned int));
     Test<CUB, unsigned long long, NullType, false> (num_items, RANDOM, entropy_reduction, 0, bits, CUB_TYPE_STRING(unsigned int));
+
+    Test<CUB, unsigned int, unsigned int, false> (num_items, RANDOM, entropy_reduction, 0, bits, CUB_TYPE_STRING(unsigned int));
+    Test<CUB, unsigned long long, unsigned int, false> (num_items, RANDOM, entropy_reduction, 0, bits, CUB_TYPE_STRING(unsigned int));
 
 #elif defined(QUICK_TEST)
 

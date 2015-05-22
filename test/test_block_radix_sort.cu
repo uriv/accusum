@@ -1,6 +1,6 @@
 /******************************************************************************
  * Copyright (c) 2011, Duane Merrill.  All rights reserved.
- * Copyright (c) 2011-2014, NVIDIA CORPORATION.  All rights reserved.
+ * Copyright (c) 2011-2015, NVIDIA CORPORATION.  All rights reserved.
  *
  * Redistribution and use in source and binary forms, with or without
  * modification, are permitted provided that the following conditions are met:
@@ -37,10 +37,10 @@
 #include <algorithm>
 #include <iostream>
 
-#include <cub/util_allocator.cuh>
+#include <cub/block/block_radix_sort.cuh>
 #include <cub/block/block_load.cuh>
 #include <cub/block/block_store.cuh>
-#include <cub/block/block_radix_sort.cuh>
+#include <cub/util_allocator.cuh>
 
 #include "test_util.h"
 
@@ -370,9 +370,11 @@ void TestDriver(
         "BLOCKED_OUTPUT(%d) "
         "sizeof(Key)(%d) "
         "sizeof(Value)(%d) "
+        "gen_mode(%d), "
         "entropy_reduction(%d) "
         "begin_bit(%d) "
-        "end_bit(%d)\n",
+        "end_bit(%d), "
+        "samples(%d)\n",
             ((KEYS_ONLY) ? "Keys-only" : "Key-value"),
             BLOCK_THREADS,
             ITEMS_PER_THREAD,
@@ -384,9 +386,11 @@ void TestDriver(
             BLOCKED_OUTPUT,
             (int) sizeof(Key),
             (int) sizeof(Value),
+            gen_mode,
             entropy_reduction,
             begin_bit,
-            end_bit);
+            end_bit,
+            g_num_rand_samples);
 
     // Set shared memory config
     cudaDeviceSetSharedMemConfig(SMEM_CONFIG);
